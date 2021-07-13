@@ -1,0 +1,160 @@
+RP Notes 2021-07
+
+RPO - Card analog side connects to an originating office, asterisk pretends to be incoming and final selectors
+RPT - Card analog side connects to a terminating office, asterisk pretends to be a sender
+
+ANALOG_SIG_RP -> Incoming and Final Selections
+ANALOG_SIG_RPDO -> Distant Office, Incoming and Final Selections
+
+RPT:
+Asterisk Originating wants:
+    ON_HOOK ->  open circuit (FXO-like)
+    OFF_HOOK -> BAT on tip, GND on ring
+    PULSES  ->  Grounds on tip (appears to go back on hook momentarily) 22pps
+    Polarity Reversal -> Could mean overflow, telltale, or incoming advance
+    
+Asterisk Originating gives:
+    ON_HOOK ->  Nothing
+    OFF_HOOK -> Closed loop
+    Off hook while recv pulses, on hook once enough pulses have come thru
+    Listen for reversal constantly. Could mean overflow, telltale, incoming advance.
+    Listn for sub to hang up, if so, drive selector up until reversal, then go on hook
+
+
+RPO:
+Asterisk Terminating wants:
+    ON_HOOK ->  open circuit
+    OFF_HOOK -> Closed loop
+    
+
+Asterisk terminating gives:
+    ON_HOOK ->  open circuit
+    OFF_HOOK -> BAT on tip, GND on ring
+    Pulses  ->  Grounds on tip (appears to go back on hook momentarily) 22 pps
+    Reversals -> Could mean overflow, telltale, or incoming advance
+
+
+      RPO (uses RPT signaling) chan 70
+ANALOG   DIGITAL
+__________________
+OPEN   ->   0,0,0,0     Analog poke -> Digital read
+CLOSE  ->   1,1,1,1     Analog poke -> Digital read
+G/G    <-   0,0,0,0     Analog read <- Digital poke
+B/G    <-   1,0,1,0     Analog read <- Digital poke
+G/B    <-   0,1,0,1     Analog read <- Digital poke
+
+0,0 G/G
+
+
+      RPT (uses RPO signaling) chan 71
+ANALOG   DIGITAL
+__________________
+OPEN   <-   0,0,0,0     Analog read <- Digital poke
+CLOSE  <-   1,1,1,1     Analog read <- Digital poke
+G/G    ->   0,0,0,0     Analog poke -> Digital read
+B/G    ->   1,0,1,0     Analog poke -> Digital read
+G/B    ->   0,1,0,1     Analog poke -> Digital read
+
+
+In DAHDI, several functions can be used for bit-poking or communicating a change to userspace. Don't know what
+they do, but the README talks about them like they're important.
+dahdi_base.c -> void dahdi_rbsbits() 
+dahdi_base.c -> void dahdi_hooksig()
+dahdi_base.c -> void dahdi_rbs_sethook()
+
+686  - IDLE STATE
+2763 - TX BITS
+8673 - RX BITS          // void dahdi_rbsbits()
+2873 - dahdi_hangup()   // calls dahdi_rbs_sethook()
+
+Call Flow
+---------
+chan 70: RPO card / RPT signaling
+Asterisk is a selector
+
+Detect seizure
+Wait configurable ms (in case relays are cranky?)
+
+for(j=1, j=5, j++)
+    do while rx bits are off hook:
+    for(k=0, k=10, k++)
+        Start sending pulses (22 ms on / 22 ms off)
+        if k>=10:
+           set tx to reverse polarity for 50 ms.
+           break. we are not going to space today.
+    when rx goes on hook:
+        stop sending pulses
+        store the count (k) somewhere for later
+end
+
+
+chan 71: RPT card / RPO signaling
+Asterisk is a sender
+
+Convert the number dialed to RP selections: counting shuld always start from 0
+If you got a number longer than 4 digits, trash the preceding digits.
+Now math it:
+
+Divide the phone number by 2000, throw away remainder
+    Store IB
+(phone number % 2000)/500, throw away remainder
+    Store IG
+(phone number % 500)/100, throw away remainder
+    Store FB
+(phone number % 100)/10, throw away remainder
+    Store FT
+(phone number % 10)
+    Store FU
+
+Check yourself. 5234 should be 2,2,2,3,4
+
+
+
+safety:
+if no pulses heard within 3 seconds, go back on hook
+
+
+
+
+
+Questions:
+Asterisk seems to use one signaling type for both sending and receiving MF, 
+but those are two different operations. How does it know what to do...listen or transmit?
+    I guess it knows cause it either listens for a closure from the analog side, 
+    or an incoming call from a digital channel.
+Asterisk also has FXO and FXS because they function fundamentally different.
+Are we going to need 4 new signaling types, or 2?
+
+Where does chan->sig get set initially?
+How is the signaling type loaded in from system.conf?
+How can I test to see that any of this is working at all?
+
+http://docs.tzafrir.org.il/dahdi-linux/README.html
+
+[2021-07-14 11:35:20] ERROR[1938]: chan_dahdi.c:12198 mkintf: Signalling requested on channel 71 is Full Mechanical Originating (RPO) but line is in Full Mechanical Originating (RPO) signalling
+[2021-07-14 11:35:20] ERROR[1938]: chan_dahdi.c:12199 mkintf: chan_sig bitwise and 0x3ffff: 0  p.sigtype: 200000
+[2021-07-14 11:35:20] ERROR[1938]: chan_dahdi.c:17719 build_channels: Unable to register channel '71'
+
+---
+HOOK STATE CHECK HAPPENS HERE
+static int dahdi_ioctl_getparams(struct file *file, unsigned long data)
+    if (chan->span) {
+        j = dahdi_q_sig(chan);
+        if (j >= 0) { /* if returned with success */
+            param.rxisoffhook = ((chan->rxsig & (j >> 8)) !=
+                            (j & 0xff));
+        } else {
+            const int sig = chan->rxhooksig;
+            param.rxisoffhook = ((sig != DAHDI_RXSIG_ONHOOK) &&
+                (sig != DAHDI_RXSIG_INITIAL));
+        }
+    } else if ((chan->txstate == DAHDI_TXSTATE_KEWL) ||
+           (chan->txstate == DAHDI_TXSTATE_AFTERKEWL)) {
+        param.rxisoffhook = 1;
+    } else {
+        param.rxisoffhook = 0;
+    }
+
+okay so that in turn calls int dahdi_q_sig() to look at the hook state and compare
+        { DAHDI_SIG_RPT,   (DAHDI_ABIT << 8) },     /*  XXX Asterisk pretends to be a selector, which is  1,0 IDLE */
+

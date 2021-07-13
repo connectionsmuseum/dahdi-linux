@@ -666,6 +666,16 @@ struct dahdi_hdlc {
 
 #define DAHDI_MAX_PRETRAINING   1000	/*!< 1000ms max pretraining time */
 
+/* Revertive Pulse definitions */
+#define DAHDI_DEFAULT_RPGROUNDTIME 22	/* Tip is grounded */
+#define DAHDI_DEFAULT RPNORMALTIME 22	/* Tip has battery */
+#define DAHDI_DEFAULT_BONKTIME 100		/* Tell-Tale, Overflow, Incoming Advance */
+
+#define DAHDI_RPMINTIME (20 * 8)	/* A selector should ground T for at least 20 ms */
+#define DAHDI_RPMAXTIME (60 * 8)	/* A selector shouldn't ground T for more than 60 ms */
+
+#define DAHDI_RPTIMEOUT ((DAHDI_RPMAXTIME / 8) + 50)
+
 #ifdef	FXSFLASH
 #define DAHDI_FXSFLASHMINTIME	450	/*!< min 450ms */
 #define DAHDI_FXSFLASHMAXTIME	550	/*!< max 550ms */
@@ -685,7 +695,8 @@ enum dahdi_txsig {
 	DAHDI_TXSIG_ONHOOK,  /*!< On hook */
 	DAHDI_TXSIG_OFFHOOK, /*!< Off hook */
 	DAHDI_TXSIG_START,   /*!< Start / Ring */
-	DAHDI_TXSIG_KEWL,     /*!< Drop battery if possible */
+	DAHDI_TXSIG_KEWL,    /*!< Drop battery if possible */
+	DAHDI_TXSIG_PULSE,
 	/*! Leave this as the last entry */
 	DAHDI_TXSIG_TOTAL,
 };
@@ -695,7 +706,8 @@ enum dahdi_rxsig {
 	DAHDI_RXSIG_OFFHOOK,
 	DAHDI_RXSIG_START,
 	DAHDI_RXSIG_RING,
-	DAHDI_RXSIG_INITIAL
+	DAHDI_RXSIG_INITIAL,
+	DAHDI_RXSIG_PULSE		/* revertive pulse happening now */
 };
 	
 enum {

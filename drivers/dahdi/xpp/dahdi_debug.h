@@ -126,6 +126,8 @@ static inline char *rxsig2str(enum dahdi_rxsig sig)
 		return "RING";
 	case DAHDI_RXSIG_INITIAL:
 		return "INITIAL";
+	case DAHDI_RXSIG_PULSE:
+		return "PULSE";
 	}
 	return "Unknown rxsig";
 }
@@ -141,6 +143,8 @@ static inline char *txsig2str(enum dahdi_txsig sig)
 		return "TXSIG_START";
 	case DAHDI_TXSIG_KEWL:
 		return "TXSIG_KEWL";	/* Drop battery if possible */
+	case DAHDI_TXSIG_PULSE:
+		return "PULSE";
 	case DAHDI_TXSIG_TOTAL:
 		break;
 	}
@@ -231,6 +235,10 @@ static inline char *sig2str(int sig)
 		return "E&M";
 	case DAHDI_SIG_EM_E1:
 		return "E&M-E1";
+	case DAHDI_SIG_RPO:
+		return "RPO";
+	case DAHDI_SIG_RPT:
+		return "RPT";
 	case DAHDI_SIG_CLEAR:
 		return "Clear";
 	case DAHDI_SIG_HDLCRAW:

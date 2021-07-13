@@ -78,6 +78,9 @@
 
 #define DAHDI_SIG_EM		(1 << 6)			/* Ear & Mouth (E&M) */
 
+#define DAHDI_SIG_RPO		(1 << 21)			/* Full Mechanical Orig */
+#define DAHDI_SIG_RPT		(1 << 22)			/* Full Mechanical Term */
+
 /* The following are all variations on clear channel */
 
 #define __DAHDI_SIG_DACS	(1 << 16)

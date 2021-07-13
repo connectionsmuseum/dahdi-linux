@@ -214,6 +214,7 @@ enum dahdi_digit_mode {
 	DIGIT_MODE_PULSE,
 	DIGIT_MODE_MFR2_FWD,
 	DIGIT_MODE_MFR2_REV,
+	DIGIT_MODE_FULLMECH
 };
 
 /* At the end of silence, the tone stops */
@@ -554,7 +555,7 @@ u_char __dahdi_lin2a[16384];
 
 static u_char defgain[256];
 
-#define NUM_SIGS	10
+#define NUM_SIGS	12
 
 static DEFINE_SPINLOCK(ecfactory_list_lock);
 
@@ -681,7 +682,9 @@ static void dahdi_disable_dacs(struct dahdi_chan *chan)
 }
 
 /*!
- * \return quiescent (idle) signalling states, for the various signalling types
+ * Return quiescent (idle) signalling states for the various signalling types.
+ * This is checking for the rx side of the hook state--what we are getting 
+ * from the channel and NOT what we should be transmitting to the channel.
  */
 static int dahdi_q_sig(struct dahdi_chan *chan)
 {
@@ -697,6 +700,8 @@ static int dahdi_q_sig(struct dahdi_chan *chan)
 		{ DAHDI_SIG_FXOKS, (DAHDI_ABIT << 8) },
 		{ DAHDI_SIG_SF,    0 },
 		{ DAHDI_SIG_EM_E1, DAHDI_DBIT | ((DAHDI_ABIT | DAHDI_DBIT) << 8) },
+		{ DAHDI_SIG_RPO,   (DAHDI_ABIT << 8) },		/*  XXX Asterisk pretends to be a sender which wants 1,0 IDLE */
+		{ DAHDI_SIG_RPT,    0 },					/*  XXX Asterisk pretends to be a selector which wants  0,0 IDLE */
 	};
 
 	/* must have span to begin with */
@@ -858,6 +863,10 @@ const char *sigstr(int sig)
 		return "E&M";
 	case DAHDI_SIG_EM_E1:
 		return "E&M-E1";
+	case DAHDI_SIG_RPO:
+		return "RPO";	// XXX sigtype here
+	case DAHDI_SIG_RPT:
+		return "RPT";
 	case DAHDI_SIG_CLEAR:
 		return "Clear";
 	case DAHDI_SIG_HDLCRAW:
@@ -2760,6 +2769,15 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 			.bits[DAHDI_TXSIG_OFFHOOK] = DAHDI_BITS_ABD,
 			.bits[DAHDI_TXSIG_START]   = DAHDI_BITS_ABD,
 			.bits[DAHDI_TXSIG_KEWL]    = DAHDI_DBIT,
+		}, {
+			.sig_type = DAHDI_SIG_RPO,		// RPO used on RPT card. Physical selector, Asterisk sender.
+			.bits[DAHDI_TXSIG_ONHOOK]		= 0,
+			.bits[DAHDI_TXSIG_OFFHOOK] 		= DAHDI_BITS_ABCD,
+		}, {
+			.sig_type = DAHDI_SIG_RPT,		// RPT used on RPO card. Physical sender, Asterisk selector.
+			.bits[DAHDI_TXSIG_ONHOOK]	= DAHDI_BITS_AC,
+			.bits[DAHDI_TXSIG_OFFHOOK]	= DAHDI_BITS_BD,
+			.bits[DAHDI_TXSIG_PULSE]	= 0,
 		}
 	};
 	int x;
@@ -3759,6 +3777,7 @@ static void __do_dtmf(struct dahdi_chan *chan)
 	/* Called with chan->lock held */
 	while ((c = chan->txdialbuf[0])) {
 		memmove(chan->txdialbuf, chan->txdialbuf + 1, sizeof(chan->txdialbuf) - 1);
+		module_printk(KERN_NOTICE, "%s:  switch: %c\n", __func__, c);
 		switch (c) {
 		case 'T':
 			chan->digitmode = DIGIT_MODE_DTMF;
@@ -3780,10 +3799,17 @@ static void __do_dtmf(struct dahdi_chan *chan)
 			chan->digitmode = DIGIT_MODE_PULSE;
 			chan->tonep = 0;
 			break;
+		case 'F':
+			chan->digitmode = DIGIT_MODE_FULLMECH;
+			chan->tonep = 0;
+			break;
 		default:
 			if ((c != 'W') && (chan->digitmode == DIGIT_MODE_PULSE)) {
 				if ((c >= '0') && (c <= '9') && (chan->txhooksig == DAHDI_TXSIG_OFFHOOK)) {
+
+					// sets 0 to 10, turns ascii into int 1 dig numbers only
 					chan->pdialcount = (c == '0') ? 10 : c - '0';
+					
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_PULSEBREAK,
 						       chan->pulsebreaktime);
 					return;
@@ -4287,6 +4313,8 @@ static int dahdi_ioctl_getparams(struct file *file, unsigned long data)
 	if (!chan)
 		return -EINVAL;
 
+	/* module_printk(KERN_WARNING, "We entered dahdi_ioctl_getparams\n"); */
+
 	/* point to relevant structure */
 	param.sigtype = chan->sig;  /* get signalling type */
 	/* return non-zero if rx not in idle state */
@@ -4295,10 +4323,12 @@ static int dahdi_ioctl_getparams(struct file *file, unsigned long data)
 		if (j >= 0) { /* if returned with success */
 			param.rxisoffhook = ((chan->rxsig & (j >> 8)) !=
 							(j & 0xff));
+/*			module_printk(KERN_NOTICE, "dahdi_q_sig: %x, param.rxisoffhook: %x\n", j, param.rxisoffhook); */
 		} else {
 			const int sig = chan->rxhooksig;
 			param.rxisoffhook = ((sig != DAHDI_RXSIG_ONHOOK) &&
 				(sig != DAHDI_RXSIG_INITIAL));
+			module_printk(KERN_NOTICE, "Entered ELSE, param.rxoffhook is %x\n", param.rxisoffhook);
 		}
 	} else if ((chan->txstate == DAHDI_TXSTATE_KEWL) ||
 		   (chan->txstate == DAHDI_TXSTATE_AFTERKEWL)) {
@@ -5127,6 +5157,8 @@ static int dahdi_ioctl_spanconfig(struct file *file, unsigned long data)
 	struct dahdi_lineconfig lc;
 	struct dahdi_span *s;
 
+	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
+
 	if (copy_from_user(&lc, (void __user *)data, sizeof(lc)))
 		return -EFAULT;
 	s = span_find_and_get(lc.span);
@@ -5158,6 +5190,8 @@ static int dahdi_ioctl_startup(struct file *file, unsigned long data)
 	int x, y;
 	unsigned long flags;
 	struct dahdi_span *s;
+
+	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
 
 	if (get_user(j, (int __user *)data))
 		return -EFAULT;
@@ -5595,6 +5629,8 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data)
 
 	tdo = kmalloc(sizeof(*tdo), GFP_KERNEL);
 
+	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
+
 	if (!tdo)
 		return -ENOMEM;
 
@@ -5612,6 +5648,9 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data)
 		module_printk(KERN_WARNING, "Cannot dial until a tone zone is loaded.\n");
 		return -ENODATA;
 	}
+
+	module_printk(KERN_NOTICE, "%s:  swtich: %c\n", __func__, tdo->op);
+
 	switch (tdo->op) {
 	case DAHDI_DIAL_OP_CANCEL:
 		chan->curtone = NULL;
@@ -5653,6 +5692,8 @@ static int dahdi_ioctl_setconf(struct file *file, unsigned long data)
 	unsigned int confmode;
 	int oldconf;
 	enum {NONE, ENABLE_HWPREEC, DISABLE_HWPREEC} preec = NONE;
+
+	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
 
 	if (copy_from_user(&conf, (void __user *)data, sizeof(conf)))
 		return -EFAULT;
@@ -5900,6 +5941,8 @@ static int dahdi_ioctl_iomux(struct file *file, unsigned long data)
 	unsigned int iomask;
 	int ret = 0;
 	DEFINE_WAIT(wait);
+
+	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
 
 	if (get_user(iomask, (int __user *)data))
 		return -EFAULT;
@@ -8556,6 +8599,11 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 						chan->itimer = chan->itimerset;
 						if (chan->pulsecount == 1)
 							__qevent(chan,DAHDI_EVENT_PULSE_START);
+							module_printk(KERN_NOTICE, "dahdi_hooksig_pvt, __qevent\n");
+							module_printk(KERN_NOTICE, "  pulsecount = %d\n", chan->pulsecount);
+							module_printk(KERN_NOTICE, "  pulsetimer = %d\n", chan->pulsetimer);
+							module_printk(KERN_NOTICE, "  itimer = %d\n", chan->itimer);
+
 					}
 			    } else
 					__qevent(chan,DAHDI_EVENT_WINKFLASH);
@@ -8578,6 +8626,50 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			}
 			if (chan->txstate == DAHDI_TXSTATE_KEWL)
 				chan->kewlonhook = 1;
+			break;
+		    default:
+			break;
+		}
+	   case DAHDI_SIG_RPO: /*XXX SA:  Revertive Pulse Originating */
+		switch(rxsig) {
+		    case DAHDI_RXSIG_PULSE: /* got a 0,0 */
+			  /* if asserting ring, stop it XXX SA I dont think this does what it says it does?*/
+			if (chan->txstate == DAHDI_TXSTATE_START) {
+				dahdi_rbs_sethook(chan,DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERSTART, DAHDI_AFTERSTART_TIME);
+			}
+			module_printk(KERN_NOTICE, "Noticed pulse state 0,0 on  %d, itimer = %d\n", chan->channo, chan->itimer);
+			if (chan->itimer) /* if timer still running */
+			{
+			    int plen = chan->itimerset - chan->itimer;
+			    if (plen <= DAHDI_RPMAXTIME)
+			    {
+					if (plen >= DAHDI_RPMINTIME)
+					{
+						chan->pulsecount++;
+						chan->pulsetimer = DAHDI_RPTIMEOUT;
+						chan->itimer = chan->itimerset;
+						if (chan->pulsecount == 1) {
+							__qevent(chan,DAHDI_EVENT_PULSE_START);		// am i going with PULSE_START or PULSE?
+							module_printk(KERN_NOTICE, "dahdi_hooksig_pvt, __qevent\n");
+							module_printk(KERN_NOTICE, "  pulsecount = %d\n", chan->pulsecount);
+							module_printk(KERN_NOTICE, "  pulsetimer = %d\n", chan->pulsetimer);
+							module_printk(KERN_NOTICE, "  itimer = %d\n", chan->itimer);
+						}
+
+					}
+
+			    } else {		// pulse is longer than RPMAXTIME. Museum off?
+					module_printk(KERN_NOTICE, "dahdi_hooksig_pvt plen: %d longer than RPMAXTIME: %d\n", plen, DAHDI_RPMAXTIME);
+				}
+			}
+			chan->itimerset = chan->itimer = 0;
+			break;
+		    
+			case DAHDI_RXSIG_ONHOOK: /* went on hook */
+			  /* if not during offhook debounce time */
+			if (chan->txstate != DAHDI_TXSTATE_DEBOUNCE) 
+				chan->itimerset = chan->itimer = chan->rxflashtime * DAHDI_CHUNKSIZE;
+			
 			break;
 		    default:
 			break;
@@ -8666,6 +8758,34 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int cursig)
 	   case DAHDI_SIG_CAS:
 		/* send event that something changed */
 		__qevent(chan, DAHDI_EVENT_BITSCHANGED);
+		break;
+
+		/*	Revertive Pulse (Full Mechanical) signaling
+			It is not meaningful to talk about RP states as being ON or OFF hook
+			Panel selectors can physically return 3 battery states to the RPT card for
+			transmission into user-space:
+			Battery on TIP		1,0 - NORMAL
+			Battery on RING		0,1 - REVERSE: ADVANCE / OVERFLOW / TELL-TALE / TALKING
+			Ground on BOTH		0,0 - PULSE HAPPENING NOW
+
+		   */
+
+	   case DAHDI_SIG_RPO:				// physical bits come from selector, passed to userspace
+		if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_BBIT)) {			/* 0,1 Reversal*/
+			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_OFFHOOK);
+		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_ABIT)) {	/* 1,0 Normal */
+			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_ONHOOK);
+		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == 0) {				/* 0,0 Open */
+			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_PULSE);
+		}
+		break;
+
+	   case DAHDI_SIG_RPT:				// physical bits come from sender, passed to userspace
+		if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_ABIT | DAHDI_BBIT)) {	/* 1,1 Closed */
+			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_OFFHOOK);
+		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == 0) {						/* 0,0 Open */
+			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_ONHOOK);
+		}
 		break;
 
 	   default:
