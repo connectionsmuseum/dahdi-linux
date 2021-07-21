@@ -671,8 +671,8 @@ struct dahdi_hdlc {
 #define DAHDI_DEFAULT RPNORMALTIME 22	/* Tip has battery */
 #define DAHDI_DEFAULT_BONKTIME 100		/* Tell-Tale, Overflow, Incoming Advance */
 
-#define DAHDI_RPMINTIME (20 * 8)	/* A selector should ground T for at least 20 ms */
-#define DAHDI_RPMAXTIME (60 * 8)	/* A selector shouldn't ground T for more than 60 ms */
+#define DAHDI_RPMINTIME (15 * 8)	/* A selector should ground T for at least 20 ms */
+#define DAHDI_RPMAXTIME (100 * 8)	/* A selector shouldn't ground T for more than 60 ms */
 
 #define DAHDI_RPTIMEOUT ((DAHDI_RPMAXTIME / 8) + 50)
 

@@ -704,22 +704,27 @@ static int dahdi_q_sig(struct dahdi_chan *chan)
 		{ DAHDI_SIG_RPT,    0 },					/*  XXX Asterisk pretends to be a selector which wants  0,0 IDLE */
 	};
 
+	module_printk(KERN_WARNING, "We're in dahdi_q_sig, looking for the hookstate bitch");
 	/* must have span to begin with */
 	if (!chan->span)
+		module_printk(KERN_WARNING, "not chan->span motherfucker");
 		return -1;
 
 	/* if RBS does not apply, return error */
 	if (!(chan->span->flags & DAHDI_FLAG_RBS) || !chan->span->ops->rbsbits)
+		module_printk(KERN_WARNING, "apparently RBSBITS does not apply to us?!");
 		return -1;
 
 	if (chan->sig == DAHDI_SIG_CAS)
+		module_printk(KERN_WARNING, "apparently we're SIG_CAS?!?!?!");
 		return chan->idlebits;
 
 	for (x = 0; x < NUM_SIGS; x++) {
 		if (in_sig[x][0] == chan->sig)
+			module_printk(KERN_WARNING, "dahdi-base.c chan_q_sig returns %d\n", in_sig[x][1]);
 			return in_sig[x][1];
 	}
-
+	module_printk(KERN_WARNING, "we returned -1 not found");
 	return -1; /* not found -- error */
 }
 
@@ -2713,7 +2718,7 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 	static const struct {
 		unsigned int sig_type;
 		/* Index is dahdi_txsig enum */
-		unsigned int bits[DAHDI_TXSIG_TOTAL];
+		unsigned int bits[DAHDI_TXSIG_TOTAL];	
 	} outs[NUM_SIGS] = {
 		{
 			/*
@@ -2782,6 +2787,7 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 	};
 	int x;
 
+	module_printk(KERN_NOTICE, "dahdi_rbs!!!!!  %s\n", chan->name);
 	/* if no span, return doing nothing */
 	if (!chan->span)
 		return;
@@ -4323,12 +4329,12 @@ static int dahdi_ioctl_getparams(struct file *file, unsigned long data)
 		if (j >= 0) { /* if returned with success */
 			param.rxisoffhook = ((chan->rxsig & (j >> 8)) !=
 							(j & 0xff));
-/*			module_printk(KERN_NOTICE, "dahdi_q_sig: %x, param.rxisoffhook: %x\n", j, param.rxisoffhook); */
+			module_printk(KERN_NOTICE, "dahdi_q_sig: %x, param.rxisoffhook: %x\n", j, param.rxisoffhook); 
 		} else {
 			const int sig = chan->rxhooksig;
 			param.rxisoffhook = ((sig != DAHDI_RXSIG_ONHOOK) &&
 				(sig != DAHDI_RXSIG_INITIAL));
-			module_printk(KERN_NOTICE, "Entered ELSE, param.rxoffhook is %x\n", param.rxisoffhook);
+			module_printk(KERN_NOTICE, "Entered ELSE, q_sig return %x, param.rxoffhook is %x\n", j, param.rxisoffhook);
 		}
 	} else if ((chan->txstate == DAHDI_TXSTATE_KEWL) ||
 		   (chan->txstate == DAHDI_TXSTATE_AFTERKEWL)) {
@@ -6858,6 +6864,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 				spin_unlock_irqrestore(&chan->lock, flags);
 				break;
 			case DAHDI_OFFHOOK:
+				module_printk(KERN_WARNING, "DAHDI RECEIVED IOCTL DAHDI_OFFHOOK\n");
 				spin_lock_irqsave(&chan->lock, flags);
 				if ((chan->txstate == DAHDI_TXSTATE_KEWL) ||
 				  (chan->txstate == DAHDI_TXSTATE_AFTERKEWL)) {
@@ -8631,16 +8638,20 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 		}
 	   case DAHDI_SIG_RPO: /*XXX SA:  Revertive Pulse Originating */
+
+		
 		switch(rxsig) {
 		    case DAHDI_RXSIG_PULSE: /* got a 0,0 */
 			  /* if asserting ring, stop it XXX SA I dont think this does what it says it does?*/
-			if (chan->txstate == DAHDI_TXSTATE_START) {
+/*			if (chan->txstate == DAHDI_TXSTATE_START) {
 				dahdi_rbs_sethook(chan,DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERSTART, DAHDI_AFTERSTART_TIME);
-			}
+			} */
+
 			module_printk(KERN_NOTICE, "Noticed pulse state 0,0 on  %d, itimer = %d\n", chan->channo, chan->itimer);
 			if (chan->itimer) /* if timer still running */
 			{
 			    int plen = chan->itimerset - chan->itimer;
+				module_printk(KERN_NOTICE, "  plen = %d\n", plen);
 			    if (plen <= DAHDI_RPMAXTIME)
 			    {
 					if (plen >= DAHDI_RPMINTIME)
@@ -8657,6 +8668,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 						}
 
 					}
+				chan->itimerset = chan->itimer = 0;
 
 			    } else {		// pulse is longer than RPMAXTIME. Museum off?
 					module_printk(KERN_NOTICE, "dahdi_hooksig_pvt plen: %d longer than RPMAXTIME: %d\n", plen, DAHDI_RPMAXTIME);
@@ -8667,6 +8679,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		    
 			case DAHDI_RXSIG_ONHOOK: /* went on hook */
 			  /* if not during offhook debounce time */
+			module_printk(KERN_NOTICE, "  Got an event ONHOOK? itimer = %d\n", chan->itimer);
 			if (chan->txstate != DAHDI_TXSTATE_DEBOUNCE) 
 				chan->itimerset = chan->itimer = chan->rxflashtime * DAHDI_CHUNKSIZE;
 			
