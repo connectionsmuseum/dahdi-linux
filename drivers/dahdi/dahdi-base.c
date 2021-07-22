@@ -8637,53 +8637,24 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		    default:
 			break;
 		}
-	   case DAHDI_SIG_RPO: /*XXX SA:  Revertive Pulse Originating */
 
+	   case DAHDI_SIG_RPO: /*XXX SA:  Revertive Pulse Originating */
 		
 		switch(rxsig) {
-		    case DAHDI_RXSIG_PULSE: /* got a 0,0 */
-			  /* if asserting ring, stop it XXX SA I dont think this does what it says it does?*/
-/*			if (chan->txstate == DAHDI_TXSTATE_START) {
-				dahdi_rbs_sethook(chan,DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERSTART, DAHDI_AFTERSTART_TIME);
-			} */
+		    case DAHDI_RXSIG_PULSE:   /* got a 0,0 */
 
 			module_printk(KERN_NOTICE, "Noticed pulse state 0,0 on  %d, itimer = %d\n", chan->channo, chan->itimer);
-			if (chan->itimer) /* if timer still running */
-			{
-			    int plen = chan->itimerset - chan->itimer;
-				module_printk(KERN_NOTICE, "  plen = %d\n", plen);
-			    if (plen <= DAHDI_RPMAXTIME)
-			    {
-					if (plen >= DAHDI_RPMINTIME)
-					{
-						chan->pulsecount++;
-						chan->pulsetimer = DAHDI_RPTIMEOUT;
-						chan->itimer = chan->itimerset;
-						if (chan->pulsecount == 1) {
-							__qevent(chan,DAHDI_EVENT_PULSE_START);		// am i going with PULSE_START or PULSE?
-							module_printk(KERN_NOTICE, "dahdi_hooksig_pvt, __qevent\n");
-							module_printk(KERN_NOTICE, "  pulsecount = %d\n", chan->pulsecount);
-							module_printk(KERN_NOTICE, "  pulsetimer = %d\n", chan->pulsetimer);
-							module_printk(KERN_NOTICE, "  itimer = %d\n", chan->itimer);
-						}
-
-					}
-				chan->itimerset = chan->itimer = 0;
-
-			    } else {		// pulse is longer than RPMAXTIME. Museum off?
-					module_printk(KERN_NOTICE, "dahdi_hooksig_pvt plen: %d longer than RPMAXTIME: %d\n", plen, DAHDI_RPMAXTIME);
-				}
-			}
-			chan->itimerset = chan->itimer = 0;
 			break;
 		    
-			case DAHDI_RXSIG_ONHOOK: /* went on hook */
-			  /* if not during offhook debounce time */
-			module_printk(KERN_NOTICE, "  Got an event ONHOOK? itimer = %d\n", chan->itimer);
-			if (chan->txstate != DAHDI_TXSTATE_DEBOUNCE) 
-				chan->itimerset = chan->itimer = chan->rxflashtime * DAHDI_CHUNKSIZE;
-			
+			case DAHDI_RXSIG_ONHOOK:  /* got a 1,1 */
+			module_printk(KERN_NOTICE, "  Got an event ONHOOK   itimer = %d\n", chan->itimer);
 			break;
+
+			case DAHDI_RXSIG_OFFHOOK: /* got a 0,1 */
+			module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL   itimer = %d\n", chan->itimer);
+			break;
+
+
 		    default:
 			break;
 		}
@@ -8706,6 +8677,7 @@ void dahdi_hooksig(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 {
 	  /* skip if no change */
 	unsigned long flags;
+	module_printk(KERN_NOTICE, "detected state transition in dahdi_hookstate");
 	spin_lock_irqsave(&chan->lock, flags);
 	__dahdi_hooksig_pvt(chan,rxsig);
 	spin_unlock_irqrestore(&chan->lock, flags);
@@ -8784,6 +8756,7 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int cursig)
 		   */
 
 	   case DAHDI_SIG_RPO:				// physical bits come from selector, passed to userspace
+		module_printk(KERN_NOTICE, "detected state change in dahdi_rbsbits on RPO")
 		if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_BBIT)) {			/* 0,1 Reversal*/
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_OFFHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_ABIT)) {	/* 1,0 Normal */
