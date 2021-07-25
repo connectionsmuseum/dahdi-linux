@@ -868,7 +868,7 @@ const char *sigstr(int sig)
 	case DAHDI_SIG_EM_E1:
 		return "E&M-E1";
 	case DAHDI_SIG_RPO:
-		return "RPO";	// XXX sigtype here
+		return "RPO";
 	case DAHDI_SIG_RPT:
 		return "RPT";
 	case DAHDI_SIG_CLEAR:
@@ -2840,7 +2840,6 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 				chan->txsig = outs[x].bits[txsig];
 				chan->span->ops->rbsbits(chan, chan->txsig);
 				chan->otimer = timeout * DAHDI_CHUNKSIZE;	/* Otimer is timer in samples */
-				module_printk(KERN_NOTICE, "dahdi_rbsbits ELSE, otimer: %d, timeout: %d\n", chan->otimer, timeout);
 				return;
 			}
 		}
@@ -2982,7 +2981,7 @@ static int initialize_channel(struct dahdi_chan *chan)
 	chan->rxwinktime = DAHDI_DEFAULT_RXWINKTIME;
 	chan->rxflashtime = DAHDI_DEFAULT_RXFLASHTIME;
 	if (chan->sig == DAHDI_SIG_RPO) {
-		module_printk(KERN_NOTICE, "Using RPO debounce timers");
+		module_printk(KERN_NOTICE, "Using RPO debounce timers on chan %d", chan->channo);
 		chan->debouncetime = DAHDI_DEFAULT_RPDEBOUNCETIME;		// XXX SA debounce
 		chan->pulsemaketime = DAHDI_DEFAULT_RPNORMALTIME;
 		chan->pulsebreaktime = DAHDI_DEFAULT_RPGROUNDTIME;
@@ -3792,7 +3791,7 @@ static void __do_dtmf(struct dahdi_chan *chan)
 	/* Called with chan->lock held */
 	while ((c = chan->txdialbuf[0])) {
 		memmove(chan->txdialbuf, chan->txdialbuf + 1, sizeof(chan->txdialbuf) - 1);
-		module_printk(KERN_NOTICE, "%s:  switch: %c\n", __func__, c);
+//		module_printk(KERN_NOTICE, "%s:  switch: %c\n", __func__, c);  XXX SA comment
 		switch (c) {
 		case 'T':
 			chan->digitmode = DIGIT_MODE_DTMF;
@@ -5662,7 +5661,7 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data)
 		return -ENODATA;
 	}
 
-	module_printk(KERN_NOTICE, "%s:  swtich: %c\n", __func__, tdo->op);
+//	module_printk(KERN_NOTICE, "%s:  swtich: %c\n", __func__, tdo->op); XXX SA printk
 
 	switch (tdo->op) {
 	case DAHDI_DIAL_OP_CANCEL:
@@ -8649,21 +8648,18 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		
 		switch(rxsig) {
 		    case DAHDI_RXSIG_PULSE:   /* got a 0,0 */
-			chan->pulsecount++;
-			module_printk(KERN_NOTICE, "Noticed pulse state 0,0 on  %d, itimer = %d\n", chan->channo, chan->itimer);
-			module_printk(KERN_NOTICE, "  itimer = %d\n", chan->itimer);
+//			chan->pulsecount++;
+			//module_printk(KERN_NOTICE, "Noticed pulse state 0,0 on  %d, itimer = %d\n", chan->channo, chan->itimer);
 			break;
 		    
 			case DAHDI_RXSIG_ONHOOK:  /* got a 1,1 */
-			module_printk(KERN_NOTICE, "  Got an event ONHOOK   itimer = %d\n", chan->itimer);
-			module_printk(KERN_NOTICE, "  itimer = %d\n", chan->itimer);
+			//module_printk(KERN_NOTICE, "  Got an event ONHOOK   itimer = %d\n", chan->itimer);
 			break;
 
 			case DAHDI_RXSIG_OFFHOOK: /* got a 0,1 */
-			module_printk(KERN_NOTICE, "pulsecount: %d\n", chan->pulsecount);
-			chan->pulsecount = 0;
-			module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL   itimer = %d\n", chan->itimer);
-			module_printk(KERN_NOTICE, "  itimer = %d\n", chan->itimer);
+//			module_printk(KERN_NOTICE, "pulsecount: %d\n", chan->pulsecount);
+//			chan->pulsecount = 0;
+			//module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL   itimer = %d\n", chan->itimer);
 			break;
 
 
@@ -8768,12 +8764,15 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int cursig)
 		   */
 
 	   case DAHDI_SIG_RPO:				// physical bits come from selector, passed to userspace
-		module_printk(KERN_NOTICE, "detected state change in dahdi_rbsbits on RPO");
+		module_printk(KERN_NOTICE, "detected state change in dahdi_rbsbits on RPO: %04x\n", chan->rxsig);
 		if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_BBIT)) {			/* 0,1 Reversal*/
+			module_printk(KERN_NOTICE, "pulsecount before __dahdi_hooksig_pvt: %d\n", chan->pulsecount);
+			chan->pulsecount = 0;
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_OFFHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_ABIT)) {	/* 1,0 Normal */
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_ONHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == 0) {				/* 0,0 Open */
+			chan->pulsecount++;
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_PULSE);
 		}
 		break;
