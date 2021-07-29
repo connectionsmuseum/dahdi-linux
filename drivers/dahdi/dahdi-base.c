@@ -2777,6 +2777,7 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 			.sig_type = DAHDI_SIG_RPO,		// RPO used on RPT card. Physical selector, Asterisk sender.
 			.bits[DAHDI_TXSIG_ONHOOK]		= 0,
 			.bits[DAHDI_TXSIG_OFFHOOK] 		= DAHDI_BITS_ABCD,
+			.bits[DAHDI_TXSIG_START] 		= DAHDI_BITS_ABCD,
 		}, {
 			.sig_type = DAHDI_SIG_RPT,		// RPT used on RPO card. Physical sender, Asterisk selector.
 			.bits[DAHDI_TXSIG_ONHOOK]	= DAHDI_BITS_AC,
@@ -5705,7 +5706,7 @@ static int dahdi_ioctl_setconf(struct file *file, unsigned long data)
 	int oldconf;
 	enum {NONE, ENABLE_HWPREEC, DISABLE_HWPREEC} preec = NONE;
 
-	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
+/*	module_printk(KERN_NOTICE, "We entered: %s\n", __func__); */
 
 	if (copy_from_user(&conf, (void __user *)data, sizeof(conf)))
 		return -EFAULT;
@@ -6898,7 +6899,12 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 					ret = chan->ringcadence[0];
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_RINGON, ret);
 				} else
-					dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
+					module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
+					if (chan->sig == DAHDI_SIG_RPO) { 
+						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);		//RPO go off hook here?
+					} else {
+						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
+					}
 				spin_unlock_irqrestore(&chan->lock, flags);
 				if (file->f_flags & O_NONBLOCK)
 					return -EINPROGRESS;
@@ -8644,31 +8650,100 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 		}
 
-	   case DAHDI_SIG_RPO: /*XXX SA:  Revertive Pulse Originating */
-		
+	   case DAHDI_SIG_RPO: /* XXX SA:  Revertive Pulse Originating
+							* moved the pulsecount here from rbsbits 
+							* because we now know rbsbits is sane. 
+							* kicking the can down the road   */
 		switch(rxsig) {
+
+
+
 		    case DAHDI_RXSIG_PULSE:   /* got a 0,0 */
-//			chan->pulsecount++;
-			//module_printk(KERN_NOTICE, "Noticed pulse state 0,0 on  %d, itimer = %d\n", chan->channo, chan->itimer);
-			break;
+				/* only count if in good hookstate */
+				if (chan->txstate == DAHDI_TXSTATE_AFTERSTART || chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
+					chan->pulsecount++;
+					if (chan->pulsecount == 1) {
+						__qevent(chan,DAHDI_EVENT_PULSE_START);		// this seems like the right thing to do here? might break stuff?
+					}
+				}
+					module_printk(KERN_NOTICE, "Got pulse state 0,0 with, DAHDI_TXSTATE = %d\n", chan->txstate);
+				break;
 		    
 			case DAHDI_RXSIG_ONHOOK:  /* got a 1,1 */
-			//module_printk(KERN_NOTICE, "  Got an event ONHOOK   itimer = %d\n", chan->itimer);
-			break;
+				module_printk(KERN_NOTICE, "  Got an event ONHOOK   itimer = %d\n", chan->itimer);
+				break;
 
 			case DAHDI_RXSIG_OFFHOOK: /* got a 0,1 */
-//			module_printk(KERN_NOTICE, "pulsecount: %d\n", chan->pulsecount);
-//			chan->pulsecount = 0;
-			//module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL   itimer = %d\n", chan->itimer);
+				module_printk(KERN_NOTICE, "pulsecount: %d\n", chan->pulsecount);
+				chan->pulsecount = 0;
+				module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL   itimer = %d\n", chan->itimer);
+
+				// Hangup. Nothing else to do here
+				__qevent(chan,DAHDI_EVENT_ONHOOK);
+				chan->txstate = DAHDI_TXSTATE_ONHOOK;
 			break;
 
 
 		    default:
 			break;
 		}
+
+		if (chan->txstate == DAHDI_TXSTATE_AFTERSTART || chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
+			res = sender(chan, rxsig);
+		}
+
 	    default:
 		break;
 	}
+}
+
+int sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
+{
+
+/* XXX SA TODO: 
+
+- How do we get the dialstring in here from asterisk?
+- Figure out selptr
+- Figure out return values
+- Sanity? Is that a thing?
+
+
+*/
+
+module_printk(KERN_NOTICE, "Sender, with pulse %x", chan->txstate);
+
+	switch(rxsig) {
+		case DAHDI_RXSIG_PULSE:
+			chan->pulsecount++;                   // count a pulse
+			printf("Pulse: %d\n", chan->pulsecount-1);
+
+			if (chan->pulsecount == sstate->selections[sstate->selptr]+1) {
+				printf("       STOP\n\n\n");
+				trunk1->commpos=0;          // finished a selection so we
+				chan->pulsecount=0;       // reset positions and then
+				sstate->selptr++;           // look at the next selection
+				return 0;
+			}
+			break;
+		case DAHDI_RXSIG_ONHOOK:
+			return 0;
+			break;
+		case DAHDI_RXSIG_OFFHOOK:
+			printf("REVERSAL\n");
+			if (sstate-> selptr >= 5) {
+				printf("SELECTIONS COMPLETE!\n");
+				return 1;
+			} else {
+				printf("OVERFLOW!\n");
+			}
+			chan->pulsecount=0;
+			sstate->selptr=0;
+			return -1;
+			break;
+	}
+	return 0;
+
+
 }
 
 /**
@@ -8764,15 +8839,15 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int cursig)
 		   */
 
 	   case DAHDI_SIG_RPO:				// physical bits come from selector, passed to userspace
-		module_printk(KERN_NOTICE, "detected state change in dahdi_rbsbits on RPO: %04x\n", chan->rxsig);
+		//module_printk(KERN_NOTICE, "detected state change in dahdi_rbsbits on RPO: %02x\n", chan->rxsig);
 		if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_BBIT)) {			/* 0,1 Reversal*/
-			module_printk(KERN_NOTICE, "pulsecount before __dahdi_hooksig_pvt: %d\n", chan->pulsecount);
-			chan->pulsecount = 0;
+			//module_printk(KERN_NOTICE, "RBSBITS Revertive Pulse count: %d\n", chan->pulsecount);
+			//chan->pulsecount = 0;
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_OFFHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_ABIT)) {	/* 1,0 Normal */
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_ONHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == 0) {				/* 0,0 Open */
-			chan->pulsecount++;
+			//chan->pulsecount++;
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_PULSE);
 		}
 		break;
