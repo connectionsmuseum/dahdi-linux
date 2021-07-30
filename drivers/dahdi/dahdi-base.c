@@ -5676,6 +5676,7 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data) // XXX 
 		break;
 	case DAHDI_DIAL_OP_REPLACE:
 		strcpy(chan->txdialbuf, tdo->dialstr);
+		module_printk(KERN_NOTICE, "%s:  REPLACE case: %s\n", __func__, tdo->dialstr);
 		chan->dialing = 1;
 		__do_dtmf(chan);
 		break;
@@ -8486,7 +8487,6 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	/* State machines for receive hookstate transitions
 		called with chan->lock held */
 
-	int res;
 	if ((chan->rxhooksig) == rxsig) return;
 
 	if ((chan->flags & DAHDI_FLAG_SIGFREEZE)) return;
@@ -8661,12 +8661,6 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 							* kicking the can down the road   */
 		switch(rxsig) {
 		    case DAHDI_RXSIG_PULSE:   /* got a 0,0 */
-				/* only count if in good hookstate */
-				if (chan->txstate == DAHDI_TXSTATE_AFTERSTART || chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
-					if (chan->pulsecount == 0) {
-						__qevent(chan,DAHDI_EVENT_PULSE_START);		// this seems like the right thing to do here? might break stuff?
-					}
-				}
 				break;
 		    
 			case DAHDI_RXSIG_ONHOOK:  /* got a 1,0 */
@@ -8678,8 +8672,13 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		    default:
 			break;
 		}
-		if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) {		//was DAHDI_TXSTATE_AFTERSTART
+		if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
 			sender(chan, rxsig);
+			//chan->dialing = 0;
+
+
+			//XXX SA Hammer asterisk with dialcomplete events to keep audio passing thru
+			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 		}
 	    default:
 		break;
