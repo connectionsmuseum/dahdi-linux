@@ -5666,7 +5666,6 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data)
 		return -ENODATA;
 	}
 
-//	module_printk(KERN_NOTICE, "%s:  swtich: %c\n", __func__, tdo->op); XXX SA printk
 
 	switch (tdo->op) {
 	case DAHDI_DIAL_OP_CANCEL:
@@ -5678,6 +5677,7 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data)
 		break;
 	case DAHDI_DIAL_OP_REPLACE:
 		strcpy(chan->txdialbuf, tdo->dialstr);
+		module_printk(KERN_NOTICE, "%s:  REPLACE case: %s\n", __func__, tdo->dialstr); XXX SA printk
 		chan->dialing = 1;
 		__do_dtmf(chan);
 		break;
@@ -6906,6 +6906,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 					module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
 					if (chan->sig == DAHDI_SIG_RPO) { 
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);		//RPO go off hook here?
+						__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
 						chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
 					} else {
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
@@ -8662,41 +8663,23 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 							* kicking the can down the road   */
 		switch(rxsig) {
 		    case DAHDI_RXSIG_PULSE:   /* got a 0,0 */
-				/* only count if in good hookstate */
-				if (chan->txstate == DAHDI_TXSTATE_AFTERSTART || chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
-					if (chan->pulsecount == 0) {
-						__qevent(chan,DAHDI_EVENT_PULSE_START);		// this seems like the right thing to do here? might break stuff?
-					}
-				}
-		//			module_printk(KERN_NOTICE, "Got pulse state 0,0 with, DAHDI_TXSTATE = %d\n", chan->txstate);
 				break;
 		    
 			case DAHDI_RXSIG_ONHOOK:  /* got a 1,0 */
-		//		module_printk(KERN_NOTICE, "  Got a pulse state 1,0  itimer = %d\n", chan->itimer);
 				break;
 
 			case DAHDI_RXSIG_OFFHOOK: /* got a 0,1 */
-		//		module_printk(KERN_NOTICE, "pulsecount: %d\n", chan->pulsecount);
-				// chan->pulsecount = 0;
-		//		module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL! txdialbuf is %s\n", chan->txdialbuf);
-#if 0
-				for (i = 0; 1 < 5; i++) {
-					chan->selections[i] = chan->txdialbuf[i] - '0';
-				}
-#endif
-				// Hangup. Nothing else to do here -- No, the sender must decide what to do.
-				// __qevent(chan,DAHDI_EVENT_ONHOOK);
-				// chan->txstate = DAHDI_TXSTATE_ONHOOK;
 			break;
 
 		    default:
 			break;
 		}
-		if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) {		//was DAHDI_TXSTATE_AFTERSTART
-			res = sender(chan, rxsig);
-		}
-		if (res > 0) {
-			chan->dialing = 0;
+		if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
+			sender(chan, rxsig);
+			//chan->dialing = 0;
+
+
+			//XXX SA Hammer asterisk with dialcomplete events to keep audio passing thru
 			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 		}
 	    default:
@@ -8704,7 +8687,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	}
 }
 
-int sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
+void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 {
 
 /* XXX SA TODO: 
@@ -8737,14 +8720,12 @@ int sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			if (chan->pulsecount == selections[chan->selptr]+1) {
 				module_printk(KERN_NOTICE, "       STOP\n\n\n");
 				// send (TX) onhook/offhook
-				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->flashtime);
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->winktime);
 				chan->pulsecount=0;       	// reset positions and then
 				chan->selptr++;           // look at the next selection
-				return 0;
 			}
 			break;
 		case DAHDI_RXSIG_ONHOOK:
-			return 0;
 			break;
 		case DAHDI_RXSIG_OFFHOOK:
 			module_printk(KERN_NOTICE, "REVERSAL\n");
@@ -8752,19 +8733,15 @@ int sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 				module_printk(KERN_NOTICE, "SELECTIONS COMPLETE!\n");
 				chan->pulsecount=0;
 				chan->selptr=0;
-				return 1;
 			} else {
 				module_printk(KERN_NOTICE, "OVERFLOW!\n");
 			}
 			chan->pulsecount=0;
 			chan->selptr=0;
-			return -1;
 			break;
 		default:
 		break;
 	}
-	return 0;
-
 
 }
 
