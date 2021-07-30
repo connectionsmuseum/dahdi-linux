@@ -581,6 +581,10 @@ struct dahdi_chan {
 	int	pulsecount;
 	int	pulsetimer;
 
+	/* Revertive Pulse selections stuff */
+	int selections[5];
+	int selptr;
+
 	/* RBS timers */
 	int 	itimerset;		/*!< what the itimer was set to last */
 	int 	itimer;
@@ -1233,6 +1237,9 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int bits);
 
 /*! \brief Tell DAHDI abou changes in received signalling */
 void dahdi_hooksig(struct dahdi_chan *chan, enum dahdi_rxsig rxsig);
+
+/*! \brief Turn DAHDI into a panel sender */
+int sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig);
 
 /*! \brief Queue an event on a channel */
 void dahdi_qevent_nolock(struct dahdi_chan *chan, int event);

@@ -1627,6 +1627,10 @@ static void close_channel(struct dahdi_chan *chan)
 	reset_conf(chan);
 	chan->dacs_chan = NULL;
 
+    memset(chan->selections, 0, sizeof(chan->selections));
+	chan->selptr = 0;
+	chan->pulsecount = 0;
+
 	if (is_gain_allocated(chan))
 		rxgain = chan->rxgain;
 
@@ -6902,6 +6906,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 					module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
 					if (chan->sig == DAHDI_SIG_RPO) { 
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);		//RPO go off hook here?
+						chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
 					} else {
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
 					}
@@ -8482,6 +8487,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	/* State machines for receive hookstate transitions
 		called with chan->lock held */
 
+	int res;
 	if ((chan->rxhooksig) == rxsig) return;
 
 	if ((chan->flags & DAHDI_FLAG_SIGFREEZE)) return;
@@ -8655,43 +8661,44 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 							* because we now know rbsbits is sane. 
 							* kicking the can down the road   */
 		switch(rxsig) {
-
-
-
 		    case DAHDI_RXSIG_PULSE:   /* got a 0,0 */
 				/* only count if in good hookstate */
 				if (chan->txstate == DAHDI_TXSTATE_AFTERSTART || chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
-					chan->pulsecount++;
-					if (chan->pulsecount == 1) {
+					if (chan->pulsecount == 0) {
 						__qevent(chan,DAHDI_EVENT_PULSE_START);		// this seems like the right thing to do here? might break stuff?
 					}
 				}
-					module_printk(KERN_NOTICE, "Got pulse state 0,0 with, DAHDI_TXSTATE = %d\n", chan->txstate);
+		//			module_printk(KERN_NOTICE, "Got pulse state 0,0 with, DAHDI_TXSTATE = %d\n", chan->txstate);
 				break;
 		    
-			case DAHDI_RXSIG_ONHOOK:  /* got a 1,1 */
-				module_printk(KERN_NOTICE, "  Got an event ONHOOK   itimer = %d\n", chan->itimer);
+			case DAHDI_RXSIG_ONHOOK:  /* got a 1,0 */
+		//		module_printk(KERN_NOTICE, "  Got a pulse state 1,0  itimer = %d\n", chan->itimer);
 				break;
 
 			case DAHDI_RXSIG_OFFHOOK: /* got a 0,1 */
-				module_printk(KERN_NOTICE, "pulsecount: %d\n", chan->pulsecount);
-				chan->pulsecount = 0;
-				module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL   itimer = %d\n", chan->itimer);
-
-				// Hangup. Nothing else to do here
-				__qevent(chan,DAHDI_EVENT_ONHOOK);
-				chan->txstate = DAHDI_TXSTATE_ONHOOK;
+		//		module_printk(KERN_NOTICE, "pulsecount: %d\n", chan->pulsecount);
+				// chan->pulsecount = 0;
+		//		module_printk(KERN_NOTICE, "Got an event POLARITY REVERSAL! txdialbuf is %s\n", chan->txdialbuf);
+#if 0
+				for (i = 0; 1 < 5; i++) {
+					chan->selections[i] = chan->txdialbuf[i] - '0';
+				}
+#endif
+				// Hangup. Nothing else to do here -- No, the sender must decide what to do.
+				// __qevent(chan,DAHDI_EVENT_ONHOOK);
+				// chan->txstate = DAHDI_TXSTATE_ONHOOK;
 			break;
-
 
 		    default:
 			break;
 		}
-
-		if (chan->txstate == DAHDI_TXSTATE_AFTERSTART || chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
+		if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) {		//was DAHDI_TXSTATE_AFTERSTART
 			res = sender(chan, rxsig);
 		}
-
+		if (res > 0) {
+			chan->dialing = 0;
+			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
+		}
 	    default:
 		break;
 	}
@@ -8702,26 +8709,37 @@ int sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 /* XXX SA TODO: 
 
-- How do we get the dialstring in here from asterisk?
-- Figure out selptr
+- How do we get the dialstring in here from asterisk? => chan->txdialbuf ??
+- Check out __do_dtmf for txdialbuf info.
+- Is txdialbuf an array, a str? what?
+- Figure out selptr => Added to kernel.h
 - Figure out return values
+- Add a DAHDI_TXSTATE
 - Sanity? Is that a thing?
+- Figure out how to deal with pulses coming after we're done, and how to reset pulsecount
 
 
 */
+	static int i;
 
-module_printk(KERN_NOTICE, "Sender, with pulse %x", chan->txstate);
+#if 0
+	for (i = 0; 1 < 5; i++) {
+		chan->selections[i] = chan->txdialbuf[i] - '0';
+	}
+#endif
+	int selections[] = {2,2,1,2,3};
 
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
 			chan->pulsecount++;                   // count a pulse
-			printf("Pulse: %d\n", chan->pulsecount-1);
+			module_printk(KERN_NOTICE, "Pulse: %d, TXSTATE %d\n", chan->pulsecount-1, chan->txstate);
 
-			if (chan->pulsecount == sstate->selections[sstate->selptr]+1) {
-				printf("       STOP\n\n\n");
-				trunk1->commpos=0;          // finished a selection so we
-				chan->pulsecount=0;       // reset positions and then
-				sstate->selptr++;           // look at the next selection
+			if (chan->pulsecount == selections[chan->selptr]+1) {
+				module_printk(KERN_NOTICE, "       STOP\n\n\n");
+				// send (TX) onhook/offhook
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->flashtime);
+				chan->pulsecount=0;       	// reset positions and then
+				chan->selptr++;           // look at the next selection
 				return 0;
 			}
 			break;
@@ -8729,17 +8747,21 @@ module_printk(KERN_NOTICE, "Sender, with pulse %x", chan->txstate);
 			return 0;
 			break;
 		case DAHDI_RXSIG_OFFHOOK:
-			printf("REVERSAL\n");
-			if (sstate-> selptr >= 5) {
-				printf("SELECTIONS COMPLETE!\n");
+			module_printk(KERN_NOTICE, "REVERSAL\n");
+			if (chan->selptr >= 5) {
+				module_printk(KERN_NOTICE, "SELECTIONS COMPLETE!\n");
+				chan->pulsecount=0;
+				chan->selptr=0;
 				return 1;
 			} else {
-				printf("OVERFLOW!\n");
+				module_printk(KERN_NOTICE, "OVERFLOW!\n");
 			}
 			chan->pulsecount=0;
-			sstate->selptr=0;
+			chan->selptr=0;
 			return -1;
 			break;
+		default:
+		break;
 	}
 	return 0;
 
