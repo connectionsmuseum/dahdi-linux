@@ -1239,7 +1239,7 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int bits);
 void dahdi_hooksig(struct dahdi_chan *chan, enum dahdi_rxsig rxsig);
 
 /*! \brief Turn DAHDI into a panel sender */
-int sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig);
+void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig);
 
 /*! \brief Queue an event on a channel */
 void dahdi_qevent_nolock(struct dahdi_chan *chan, int event);
