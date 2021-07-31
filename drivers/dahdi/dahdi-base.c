@@ -34,6 +34,7 @@
  * this program for more details.
  */
 
+#define HEARPULSING 1
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -7837,7 +7838,7 @@ static inline void __dahdi_process_getaudio_chunk(struct dahdi_chan *ss, unsigne
 	}
 #endif
 
-	if ((!ms->confmute && !ms->dialing) || (is_pseudo_chan(ms))) {
+	if ((!ms->confmute && ((!ms->dialing) || (HEARPULSING == 1))) || (is_pseudo_chan(ms))) {
 		struct dahdi_chan *const conf_chan = ms->conf_chan;
 		/* Handle conferencing on non-clear channel and non-HDLC channels */
 		switch(ms->confmode & DAHDI_CONF_MODE_MASK) {
@@ -8889,7 +8890,7 @@ static inline void __dahdi_process_putaudio_chunk(struct dahdi_chan *ss, unsigne
 
 	if (ms->dialing) ms->afterdialingtimer = 50;
 	else if (ms->afterdialingtimer) ms->afterdialingtimer--;
-	if (ms->afterdialingtimer && !is_pseudo_chan(ms)) {
+	if (ms->afterdialingtimer && !is_pseudo_chan(ms) && (HEARPULSING == 0)) {
 		/* Be careful since memset is likely a macro */
 		rxb[0] = DAHDI_LIN2X(0, ms);
 		memset(&rxb[1], rxb[0], DAHDI_CHUNKSIZE - 1);  /* receive as silence if dialing */
