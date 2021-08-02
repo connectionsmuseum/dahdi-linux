@@ -3818,10 +3818,6 @@ static void __do_dtmf(struct dahdi_chan *chan)
 			chan->digitmode = DIGIT_MODE_PULSE;
 			chan->tonep = 0;
 			break;
-		case 'F':
-			chan->digitmode = DIGIT_MODE_FULLMECH;
-			chan->tonep = 0;
-			break;
 		default:
 			if ((c != 'W') && (chan->digitmode == DIGIT_MODE_PULSE)) {
 				if ((c >= '0') && (c <= '9') && (chan->txhooksig == DAHDI_TXSIG_OFFHOOK)) {
@@ -5676,9 +5672,14 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data) // XXX 
 		break;
 	case DAHDI_DIAL_OP_REPLACE:
 		strcpy(chan->txdialbuf, tdo->dialstr);
-		module_printk(KERN_NOTICE, "%s:  REPLACE case: %s\n", __func__, tdo->dialstr);
 		chan->dialing = 1;
-		__do_dtmf(chan);
+		if (chan->sig == DAHDI_SIG_RPO) {
+			module_printk(KERN_NOTICE, "%s:  REPLACE from: %s\n", __func__, tdo->dialstr);
+			module_printk(KERN_NOTICE, "%s:  REPLACE to: %s\n", __func__, chan->txdialbuf);
+			break;
+		} else {
+			__do_dtmf(chan);
+		}
 		break;
 	case DAHDI_DIAL_OP_APPEND:
 		if (strlen(tdo->dialstr) + strlen(chan->txdialbuf) >= (DAHDI_MAX_DTMF_BUF - 1)) {
@@ -6876,6 +6877,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 			case DAHDI_OFFHOOK:
 				module_printk(KERN_WARNING, "DAHDI ioctl, is now OFFHOOK on %d\n", chan->channo);
 				spin_lock_irqsave(&chan->lock, flags);
+				chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
 				if ((chan->txstate == DAHDI_TXSTATE_KEWL) ||
 				  (chan->txstate == DAHDI_TXSTATE_AFTERKEWL)) {
 					spin_unlock_irqrestore(&chan->lock, flags);
@@ -8415,9 +8417,13 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 
 	case DAHDI_TXSTATE_FLASH:
 		dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);
-		if (chan->file && (chan->file->f_flags & O_NONBLOCK))
-			__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
-		wake_up_interruptible(&chan->waitq);
+		if (chan->sig != DAHDI_SIG_RPO) {
+			if (chan->file && (chan->file->f_flags & O_NONBLOCK)) {		// SA stop sending hook complete on every RP
+				__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
+			}
+		} else {
+			wake_up_interruptible(&chan->waitq);
+		}
 		break;
 
 	case DAHDI_TXSTATE_DEBOUNCE:
@@ -8672,15 +8678,20 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		    default:
 			break;
 		}
+		
 		if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
+			chan->dialing = 1;
 			sender(chan, rxsig);
-			//chan->dialing = 0;
 
-
+#if 0
 			//XXX SA Hammer asterisk with dialcomplete events to keep audio passing thru
-			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
+			if (chan->selptr == 0) {
+				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
+			}
+		
+#endif
 		}
-	    default:
+	   default:
 		break;
 	}
 }
@@ -8701,14 +8712,15 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 
 */
-	static int i;
+	int selections[6]; /* IB, IG, FB, FT, FU, null terminated */
+	int i;
 
-#if 0
-	for (i = 0; 1 < 5; i++) {
-		chan->selections[i] = chan->txdialbuf[i] - '0';
+	for (i = 0; i < 5; i++) {
+		selections[i] = chan->txdialbuf[i] - '0';
 	}
-#endif
-	int selections[] = {2,2,1,2,3};
+	
+	//int selections[] = {2,3,1,7,8};
+
 
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
@@ -8734,8 +8746,10 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			} else {
 				module_printk(KERN_NOTICE, "OVERFLOW!\n");
 			}
-			chan->pulsecount=0;
-			chan->selptr=0;
+			chan->pulsecount = 0;
+			chan->selptr = 0;
+			chan->dialing = 0;
+			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 			break;
 		default:
 		break;
@@ -8838,13 +8852,10 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int cursig)
 	   case DAHDI_SIG_RPO:				// physical bits come from selector, passed to userspace
 		//module_printk(KERN_NOTICE, "detected state change in dahdi_rbsbits on RPO: %02x\n", chan->rxsig);
 		if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_BBIT)) {			/* 0,1 Reversal*/
-			//module_printk(KERN_NOTICE, "RBSBITS Revertive Pulse count: %d\n", chan->pulsecount);
-			//chan->pulsecount = 0;
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_OFFHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_ABIT)) {	/* 1,0 Normal */
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_ONHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == 0) {				/* 0,0 Open */
-			//chan->pulsecount++;
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_PULSE);
 		}
 		break;
