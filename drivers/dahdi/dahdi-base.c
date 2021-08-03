@@ -5642,8 +5642,6 @@ static int ioctl_dahdi_dial(struct dahdi_chan *chan, unsigned long data) // XXX 
 
 	tdo = kmalloc(sizeof(*tdo), GFP_KERNEL);
 
-	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
-
 	if (!tdo)
 		return -ENOMEM;
 
@@ -6903,15 +6901,16 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 					chan->cadencepos = 0;
 					ret = chan->ringcadence[0];
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_RINGON, ret);
-				} else
-					module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
-					if (chan->sig == DAHDI_SIG_RPO) { 
+				} else {
+					if (chan->sig == DAHDI_SIG_RPO) { 		// SA added bracket to else aug 2
+						module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);		//RPO go off hook here?
 						__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
 						chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
 					} else {
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
 					}
+				}
 				spin_unlock_irqrestore(&chan->lock, flags);
 				if (file->f_flags & O_NONBLOCK)
 					return -EINPROGRESS;
@@ -8679,17 +8678,14 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 		}
 		
-		if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) {
-			chan->dialing = 1;
-			sender(chan, rxsig);
+		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)) {
+			sender(chan, rxsig);				// SA aded chan->dialing aug 2
 
-#if 0
 			//XXX SA Hammer asterisk with dialcomplete events to keep audio passing thru
 			if (chan->selptr == 0) {
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 			}
 		
-#endif
 		}
 	   default:
 		break;
@@ -8701,9 +8697,6 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 /* XXX SA TODO: 
 
-- How do we get the dialstring in here from asterisk? => chan->txdialbuf ??
-- Check out __do_dtmf for txdialbuf info.
-- Is txdialbuf an array, a str? what?
 - Figure out selptr => Added to kernel.h
 - Figure out return values
 - Add a DAHDI_TXSTATE
@@ -8712,20 +8705,19 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 
 */
-	int selections[6]; /* IB, IG, FB, FT, FU, null terminated */
+	int selections[5]; /* IB, IG, FB, FT, FU */
 	int i;
 
 	for (i = 0; i < 5; i++) {
 		selections[i] = chan->txdialbuf[i] - '0';
 	}
-	
-	//int selections[] = {2,3,1,7,8};
 
+//	int selections[] = {2,3,1,7,8};
 
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
 			chan->pulsecount++;                   // count a pulse
-			module_printk(KERN_NOTICE, "Pulse: %d, TXSTATE %d\n", chan->pulsecount-1, chan->txstate);
+			module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d\n", chan->pulsecount-1, chan->selptr);
 
 			if (chan->pulsecount == selections[chan->selptr]+1) {
 				module_printk(KERN_NOTICE, "       STOP\n\n\n");
