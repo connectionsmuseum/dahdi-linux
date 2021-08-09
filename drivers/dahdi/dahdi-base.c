@@ -34,6 +34,7 @@
  * this program for more details.
  */
 
+#define HEARPULSING 1
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -6904,8 +6905,12 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 				} else {
 					if (chan->sig == DAHDI_SIG_RPO) { 		// SA added bracket to else aug 2
 						module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
-						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);		//RPO go off hook here?
+						/* RPO go off hook here */
+						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);
 						__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
+						
+						/* Set a timer for the sender */
+						chan->itimer=10000;
 						chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
 					} else {
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
@@ -7905,7 +7910,7 @@ static inline void __dahdi_process_getaudio_chunk(struct dahdi_chan *ss, unsigne
 	}
 #endif
 
-	if ((!ms->confmute && !ms->dialing) || (is_pseudo_chan(ms))) {
+	if ((!ms->confmute && ((!ms->dialing) || (HEARPULSING == 1))) || (is_pseudo_chan(ms))) {
 		struct dahdi_chan *const conf_chan = ms->conf_chan;
 		/* Handle conferencing on non-clear channel and non-HDLC channels */
 		switch(ms->confmode & DAHDI_CONF_MODE_MASK) {
@@ -8679,9 +8684,10 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		}
 		
 		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)) {
-			sender(chan, rxsig);				// SA aded chan->dialing aug 2
+			// start a timer, when we go off hook, then...
+			sender(chan, rxsig);
 
-			//XXX SA Hammer asterisk with dialcomplete events to keep audio passing thru
+			//XXX SA hammer Asterisk with dialcomplete events to keep audio passing thru
 			if (chan->selptr == 0) {
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 			}
@@ -8697,44 +8703,59 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 /* XXX SA TODO: 
 
-- Figure out selptr => Added to kernel.h
-- Figure out return values
-- Add a DAHDI_TXSTATE
 - Sanity? Is that a thing?
 - Figure out how to deal with pulses coming after we're done, and how to reset pulsecount
-
-
 */
-	int selections[5]; /* IB, IG, FB, FT, FU */
+
 	int i;
 
-	for (i = 0; i < 5; i++) {
-		selections[i] = chan->txdialbuf[i] - '0';
+	/* If the first char from Asterisk is 'Z', this means we need office selections.
+	   If not, then we skip office selections. */
+	if (chan->txdialbuf[0] == 'Z') {
+		/* Start at Office Brush, selection 0 */
+		chan->selptr = OB;
+		memmove(&chan->txdialbuf, &chan->txdialbuf[1], 7);
+		chan->txdialbuf[7] = '\0';
+	} else {
+		/* Start at Incoming Brush, selection 2 */
+		chan->selptr = IB;
 	}
-
-//	int selections[] = {2,3,1,7,8};
+		
+	/* Convert string selections to int selections. We might not need OB, OG, but we're
+	   going to keep their places in the array anyway, and just adjust the location of the pointer.
+	 * OB, OG, IB, IG, FB, FT, FU 	*/
+	for (i = 0; i < 7; i++) {
+		chan->selections[i] = chan->txdialbuf[i] - '0';
+	}
 
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
-			chan->pulsecount++;                   // count a pulse
-			module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d\n", chan->pulsecount-1, chan->selptr);
+			/* This 'if' will ensure that we ignore early transients. 
+			   We set chan->itimer when we pick up the trunk, and for the first
+			   10-20 ms, we don't want to pay attention to any pulses, because they're
+			   not real.
+			 */
+			if ((chan->itimer > 9400) && ((chan->selptr == OB) || chan->selptr == IB)) {
+				return;
+			} else {
+				chan->pulsecount++;
+				module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d,  i-%d\n", chan->pulsecount-1, chan->selptr, chan->itimer);
 
-			if (chan->pulsecount == selections[chan->selptr]+1) {
-				module_printk(KERN_NOTICE, "       STOP\n\n\n");
-				// send (TX) onhook/offhook
-				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->winktime);
-				chan->pulsecount=0;       	// reset positions and then
-				chan->selptr++;           // look at the next selection
+				if (chan->pulsecount == chan->selections[chan->selptr]+1) {
+					module_printk(KERN_NOTICE, "       STOP\n\n\n");
+					// send (TX) onhook/offhook at the end of a selection
+					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->winktime);
+					chan->pulsecount=0;       	// reset positions and then
+					chan->selptr++;           // look at the next selection
+				}
 			}
 			break;
 		case DAHDI_RXSIG_ONHOOK:
 			break;
 		case DAHDI_RXSIG_OFFHOOK:
 			module_printk(KERN_NOTICE, "REVERSAL\n");
-			if (chan->selptr >= 5) {
+			if (chan->selptr >= FB) {
 				module_printk(KERN_NOTICE, "SELECTIONS COMPLETE!\n");
-				chan->pulsecount=0;
-				chan->selptr=0;
 			} else {
 				module_printk(KERN_NOTICE, "OVERFLOW!\n");
 			}
@@ -9081,7 +9102,7 @@ static inline void __dahdi_process_putaudio_chunk(struct dahdi_chan *ss, unsigne
 
 	if (ms->dialing) ms->afterdialingtimer = 50;
 	else if (ms->afterdialingtimer) ms->afterdialingtimer--;
-	if (ms->afterdialingtimer && !is_pseudo_chan(ms)) {
+	if (ms->afterdialingtimer && !is_pseudo_chan(ms) && (HEARPULSING == 0)) {
 		/* Be careful since memset is likely a macro */
 		rxb[0] = DAHDI_LIN2X(0, ms);
 		memset(&rxb[1], rxb[0], DAHDI_CHUNKSIZE - 1);  /* receive as silence if dialing */

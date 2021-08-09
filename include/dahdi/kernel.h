@@ -582,8 +582,8 @@ struct dahdi_chan {
 	int	pulsetimer;
 
 	/* Revertive Pulse selections stuff */
-	int selections[5];
-	int selptr;
+	int selections[7];
+	enum selection{OB, OG, IB, IG, FB, FT, FU} selptr;
 
 	/* RBS timers */
 	int 	itimerset;		/*!< what the itimer was set to last */
@@ -671,7 +671,8 @@ struct dahdi_hdlc {
 #define DAHDI_MAX_PRETRAINING   1000	/*!< 1000ms max pretraining time */
 
 /* Revertive Pulse definitions */
-#define DAHDI_DEFAULT_RPDEBOUNCETIME 100	/*!< 100ms of FXS GS signalling debounce. No effect on count */
+#define DAHDI_DEFAULT_RPDEBOUNCETIME 80		/* Time after trunk closure where we  
+											 * should start listening  */
 #define DAHDI_DEFAULT_RPNORMALTIME 22		/* Tip has battery  No effect on count */
 #define DAHDI_DEFAULT_RPGROUNDTIME 22		/* Tip is grounded No effect on count */
 #define DAHDI_DEFAULT_RPAFTERTIME 250		/*!< 750ms between dial pulse digits */
