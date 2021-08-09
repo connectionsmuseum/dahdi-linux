@@ -1631,6 +1631,7 @@ static void close_channel(struct dahdi_chan *chan)
     memset(chan->selections, 0, sizeof(chan->selections));
 	chan->selptr = 0;
 	chan->pulsecount = 0;
+	chan->conversiondone = 0;
 
 	if (is_gain_allocated(chan))
 		rxgain = chan->rxgain;
@@ -6910,7 +6911,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 						__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
 						
 						/* Set a timer for the sender */
-						chan->itimer=10000;
+						chan->rpdebtimer=10000;
 						chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
 					} else {
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
@@ -8708,21 +8709,25 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 */
 
 	int i;
-
-	/* If the first char from Asterisk is 'Z', this means we need office selections.
-	   If not, then we skip office selections. */
-	if (chan->txdialbuf[0] == 'Z') {
-		/* Start at Office Brush, selection 0 */
-		chan->selptr = OB;
-		memmove(&chan->txdialbuf, &chan->txdialbuf[1], 7);
-		chan->txdialbuf[7] = '\0';
-	} else {
-		/* Start at Incoming Brush, selection 2 */
-		chan->selptr = IB;
+	
+	if (chan->conversiondone == 0) {
+		/* If the first char from Asterisk is 'Z', this means we need office selections.
+		   If not, then we skip office selections. */
+		if (chan->txdialbuf[0] == 'Z') {
+			/* Start at Office Brush, selection 0 */
+			chan->selptr = OB;
+			memmove(&chan->txdialbuf, &chan->txdialbuf[1], 7);
+			chan->txdialbuf[7] = '\0';
+			module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
+		} else {
+			/* Start at Incoming Brush, selection 2 */
+			chan->selptr = IB;
+			module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
+		}
+		chan->conversiondone = 1;
 	}
 		
-	/* Convert string selections to int selections. We might not need OB, OG, but we're
-	   going to keep their places in the array anyway, and just adjust the location of the pointer.
+	/* Convert string selections to int selections.
 	 * OB, OG, IB, IG, FB, FT, FU 	*/
 	for (i = 0; i < 7; i++) {
 		chan->selections[i] = chan->txdialbuf[i] - '0';
@@ -8731,20 +8736,23 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
 			/* This 'if' will ensure that we ignore early transients. 
-			   We set chan->itimer when we pick up the trunk, and for the first
+			   We set chan->rpdebtimer when we pick up the trunk, and for the first
 			   10-20 ms, we don't want to pay attention to any pulses, because they're
 			   not real.
 			 */
-			if ((chan->itimer > 9400) && ((chan->selptr == OB) || chan->selptr == IB)) {
+			if ((chan->rpdebtimer > 8700)) {
+				module_printk(KERN_NOTICE, " DEBOUNCED!\n\n");
 				return;
 			} else {
 				chan->pulsecount++;
-				module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d,  i-%d\n", chan->pulsecount-1, chan->selptr, chan->itimer);
+				module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d,  i-%d\n", chan->pulsecount-1, chan->selptr, chan->rpdebtimer);
 
 				if (chan->pulsecount == chan->selections[chan->selptr]+1) {
 					module_printk(KERN_NOTICE, "       STOP\n\n\n");
 					// send (TX) onhook/offhook at the end of a selection
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->winktime);
+					/* reset rpdebtimer so we can ignore early transients */
+					chan->rpdebtimer = 10000 + chan->winktime;
 					chan->pulsecount=0;       	// reset positions and then
 					chan->selptr++;           // look at the next selection
 				}
@@ -8762,6 +8770,9 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			chan->pulsecount = 0;
 			chan->selptr = 0;
 			chan->dialing = 0;
+			// I should look up how to really set these per chan, cause this might
+			// get undefined really fast
+			chan->conversiondone = 0;
 			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 			break;
 		default:
@@ -10426,6 +10437,12 @@ int _dahdi_receive(struct dahdi_span *span)
 			chan->itimer -= DAHDI_CHUNKSIZE;
 			if (chan->itimer <= 0)
 				rbs_itimer_expire(chan);
+		}
+		/* RP transient debounce timer */
+		if (chan->rpdebtimer) {
+			chan->rpdebtimer -= DAHDI_CHUNKSIZE;
+			if (chan->rpdebtimer <= 0)
+				chan->rpdebtimer = 0;
 		}
 		if (chan->ringdebtimer)
 			chan->ringdebtimer--;

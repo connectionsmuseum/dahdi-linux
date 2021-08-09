@@ -584,6 +584,8 @@ struct dahdi_chan {
 	/* Revertive Pulse selections stuff */
 	int selections[7];
 	enum selection{OB, OG, IB, IG, FB, FT, FU} selptr;
+	int conversiondone;
+	int rpdebtimer;
 
 	/* RBS timers */
 	int 	itimerset;		/*!< what the itimer was set to last */
