@@ -607,6 +607,9 @@ struct dahdi_chan {
 	/*! Idle signalling if CAS signalling */
 	int idlebits;
 
+	/* Cut audio through early to hear pulsing */
+	short hearpulsing;
+
 	int deflaw;		/*! 1 = mulaw, 2=alaw, 0=undefined */
 	short *xlaw;
 #ifdef	OPTIMIZE_CHANMUTE

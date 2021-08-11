@@ -688,6 +688,7 @@ struct dahdi_chanconfig {
 	int	idlebits;	/* Idle bits (if this is a CAS channel) or
 				   channel to monitor (if this is DACS channel) */
 	char	netdev_name[16];/* name for the hdlc network device*/
+	int hearpulsing; 	/* make outpulsing audible to caller */
 };
 
 #define DAHDI_CHANCONFIG		_IOW(DAHDI_CODE, 19, struct dahdi_chanconfig)
