@@ -34,7 +34,6 @@
  * this program for more details.
  */
 
-#define HEARPULSING 1
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -165,6 +164,7 @@ enum dahdi_txstate {
 	DAHDI_TXSTATE_PULSEBREAK,
 	DAHDI_TXSTATE_PULSEMAKE,
 	DAHDI_TXSTATE_PULSEAFTER,
+	DAHDI_TXSTATE_RUNDOWN,
 };
 
 typedef short sumtype[DAHDI_MAX_CHUNKSIZE];
@@ -2883,6 +2883,9 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 
 	chan->kewlonhook = 0;
 
+
+	module_printk(KERN_NOTICE, "in hangup so whats the big idea?\n")
+
 	if ((chan->sig == DAHDI_SIG_FXSLS) || (chan->sig == DAHDI_SIG_FXSKS) ||
 			(chan->sig == DAHDI_SIG_FXSGS)) {
 		chan->ringdebtimer = RING_DEBOUNCE_TIME;
@@ -2896,7 +2899,16 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 			&& !((chan->rxhooksig == DAHDI_RXSIG_ONHOOK) && (chan->itimer <= 0))) {
 			/* Do RBS signalling on the channel's behalf */
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_KEWL, DAHDI_TXSTATE_KEWL, DAHDI_KEWLTIME);
-		} else
+		} else if ((chan->sig == DAHDI_SIG_RPO) && (chan->dialing==1)) {
+			/* run down the sender? */
+			module_printk(KERN_NOTICE, "attempting to run down sender\n");
+			dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RUNDOWN, 5000);
+			
+			if (chan->conversiondone == 0) {
+				module_printk(KERN_NOTICE, "sender run down, going on hook maybe\n");
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
+			}
+		} else 
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
 	} else {
 		/* Let the driver hang up the line if it wants to  */
@@ -2935,6 +2947,7 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 	chan->curtone = NULL;
 	chan->pdialcount = 0;
 	chan->cadencepos = 0;
+	chan->selptr = 0;
 	chan->txdialbuf[0] = 0;
 
 	return res;
@@ -5959,8 +5972,6 @@ static int dahdi_ioctl_iomux(struct file *file, unsigned long data)
 	int ret = 0;
 	DEFINE_WAIT(wait);
 
-	module_printk(KERN_NOTICE, "We entered: %s. Wait for something to happen.\n", __func__);
-
 	if (get_user(iomask, (int __user *)data))
 		return -EFAULT;
 
@@ -6875,7 +6886,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 				spin_unlock_irqrestore(&chan->lock, flags);
 				break;
 			case DAHDI_OFFHOOK:
-				module_printk(KERN_WARNING, "DAHDI ioctl, is now OFFHOOK on %d\n", chan->channo);
+				module_printk(KERN_WARNING, "DAHDI ioctl. Now OFFHOOK on %d\n", chan->channo);
 				spin_lock_irqsave(&chan->lock, flags);
 				chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
 				if ((chan->txstate == DAHDI_TXSTATE_KEWL) ||
@@ -8487,6 +8498,11 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		wake_up_interruptible(&chan->waitq);
 		break;
 
+	case DAHDI_TXSTATE_RUNDOWN:
+		dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
+		wake_up_interruptible(&chan->waitq);
+		break;
+
 	default:
 		break;
 	}
@@ -8684,7 +8700,8 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 		}
 		
-		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)) {
+		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
+				|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
 			// start a timer, when we go off hook, then...
 			sender(chan, rxsig);
 
@@ -8773,7 +8790,11 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			// I should look up how to really set these per chan, cause this might
 			// get undefined really fast
 			chan->conversiondone = 0;
-			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
+			if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
+				module_printk(KERN_NOTICE, "Sender completed rundown\n");
+			} else {
+				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
+			}
 			break;
 		default:
 		break;
