@@ -34,6 +34,7 @@
  * this program for more details.
  */
 
+#define HEARPULSING 1		/* likely overriden on a per channel basis */
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -2871,7 +2872,7 @@ static int dahdi_cas_setbits(struct dahdi_chan *chan, int bits)
 
 static int dahdi_hangup(struct dahdi_chan *chan)
 {
-	int x, res = 0;
+	int i, x, res = 0;
 
 	/* Can't hangup pseudo channels */
 	if (!chan->span)
@@ -2882,9 +2883,6 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 		return -EINVAL;
 
 	chan->kewlonhook = 0;
-
-
-	module_printk(KERN_NOTICE, "in hangup so whats the big idea?\n")
 
 	if ((chan->sig == DAHDI_SIG_FXSLS) || (chan->sig == DAHDI_SIG_FXSKS) ||
 			(chan->sig == DAHDI_SIG_FXSGS)) {
@@ -2899,15 +2897,20 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 			&& !((chan->rxhooksig == DAHDI_RXSIG_ONHOOK) && (chan->itimer <= 0))) {
 			/* Do RBS signalling on the channel's behalf */
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_KEWL, DAHDI_TXSTATE_KEWL, DAHDI_KEWLTIME);
-		} else if ((chan->sig == DAHDI_SIG_RPO) && (chan->dialing==1)) {
-			/* run down the sender? */
-			module_printk(KERN_NOTICE, "attempting to run down sender\n");
-			dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RUNDOWN, 5000);
-			
-			if (chan->conversiondone == 0) {
-				module_printk(KERN_NOTICE, "sender run down, going on hook maybe\n");
-				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
-			}
+		} else if (chan->sig == DAHDI_SIG_RPO) {
+				if (chan->conversiondone == 1) {
+					/* run down the sender? */
+					module_printk(KERN_NOTICE, "attempting to run down sender\n");
+					for (i=0; i<=6; i++) {
+						chan->selections[i]=11;
+					}
+					dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RUNDOWN, 5000);
+					return 0;
+				}
+				if (chan->conversiondone == 0) {
+					module_printk(KERN_NOTICE, "run down complete, going on hook maybe\n");
+					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
+				}
 		} else 
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
 	} else {
@@ -4343,8 +4346,6 @@ static int dahdi_ioctl_getparams(struct file *file, unsigned long data)
 	if (!chan)
 		return -EINVAL;
 
-	/* module_printk(KERN_WARNING, "We entered dahdi_ioctl_getparams\n"); */
-
 	/* point to relevant structure */
 	param.sigtype = chan->sig;  /* get signalling type */
 	/* return non-zero if rx not in idle state */
@@ -5185,8 +5186,6 @@ static int dahdi_ioctl_spanconfig(struct file *file, unsigned long data)
 	struct dahdi_lineconfig lc;
 	struct dahdi_span *s;
 
-	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
-
 	if (copy_from_user(&lc, (void __user *)data, sizeof(lc)))
 		return -EFAULT;
 	s = span_find_and_get(lc.span);
@@ -5218,8 +5217,6 @@ static int dahdi_ioctl_startup(struct file *file, unsigned long data)
 	int x, y;
 	unsigned long flags;
 	struct dahdi_span *s;
-
-	module_printk(KERN_NOTICE, "We entered: %s\n", __func__);
 
 	if (get_user(j, (int __user *)data))
 		return -EFAULT;
@@ -5722,8 +5719,6 @@ static int dahdi_ioctl_setconf(struct file *file, unsigned long data)
 	unsigned int confmode;
 	int oldconf;
 	enum {NONE, ENABLE_HWPREEC, DISABLE_HWPREEC} preec = NONE;
-
-/*	module_printk(KERN_NOTICE, "We entered: %s\n", __func__); */
 
 	if (copy_from_user(&conf, (void __user *)data, sizeof(conf)))
 		return -EFAULT;
@@ -8702,14 +8697,15 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		
 		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
 				|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
-			// start a timer, when we go off hook, then...
+			module_printk(KERN_NOTICE, "Calling sender with TXSTATE %d\n", chan->txstate);
+			/* Ask our sender to handle whatever pulse condition came in on the wire */
 			sender(chan, rxsig);
 
-			//XXX SA hammer Asterisk with dialcomplete events to keep audio passing thru
+			/* Hammer Asterisk with dialcomplete events to keep audio passing thru
+			   XXX SA: Does this even work like you think it does? */
 			if (chan->selptr == 0) {
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 			}
-		
 		}
 	   default:
 		break;
@@ -8722,13 +8718,13 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 /* XXX SA TODO: 
 
 - Sanity? Is that a thing?
-- Figure out how to deal with pulses coming after we're done, and how to reset pulsecount
 */
 
 	int i;
-	
+
+	/* If we have not already done dialstring conversion to remove the 'Z' */
 	if (chan->conversiondone == 0) {
-		/* If the first char from Asterisk is 'Z', this means we need office selections.
+		/* If the first char from Asterisk is 'Z', we need office selections.
 		   If not, then we skip office selections. */
 		if (chan->txdialbuf[0] == 'Z') {
 			/* Start at Office Brush, selection 0 */
@@ -8787,11 +8783,28 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			chan->pulsecount = 0;
 			chan->selptr = 0;
 			chan->dialing = 0;
-			// I should look up how to really set these per chan, cause this might
-			// get undefined really fast
-			chan->conversiondone = 0;
 			if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
 				module_printk(KERN_NOTICE, "Sender completed rundown\n");
+				chan->conversiondone = 0;
+
+				module_printk(KERN_NOTICE, "Should be calling hangup now\n");
+				dahdi_hangup(chan);
+				break;
+
+
+
+				/*  need a variable to track if still sending so hangup can decide what to do
+
+					rundown is set by hangup() and then returns without
+					resetting other vars. sets all selections to 11. 
+					now we get a signal from the channel
+					and we're in rundown so sender is called.
+					vars are still set, so sender does its thing until it gets to overflow
+					once we're in overflow in rundown state, then print this message,
+					set state to offhook, and call hangup on this chan.
+
+
+					*/
 			} else {
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 			}
