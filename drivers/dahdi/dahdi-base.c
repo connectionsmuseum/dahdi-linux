@@ -166,6 +166,7 @@ enum dahdi_txstate {
 	DAHDI_TXSTATE_PULSEMAKE,
 	DAHDI_TXSTATE_PULSEAFTER,
 	DAHDI_TXSTATE_RUNDOWN,
+	DAHDI_TXSTATE_AFTERBONK,
 };
 
 typedef short sumtype[DAHDI_MAX_CHUNKSIZE];
@@ -2872,7 +2873,7 @@ static int dahdi_cas_setbits(struct dahdi_chan *chan, int bits)
 
 static int dahdi_hangup(struct dahdi_chan *chan)
 {
-	int i, x, res = 0;
+	int x, res = 0;
 
 	/* Can't hangup pseudo channels */
 	if (!chan->span)
@@ -2901,14 +2902,12 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 				if (chan->conversiondone == 1) {
 					/* run down the sender? */
 					module_printk(KERN_NOTICE, "attempting to run down sender\n");
-					for (i=0; i<=6; i++) {
-						chan->selections[i]=11;
-					}
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RUNDOWN, 5000);
 					return 0;
-				}
-				if (chan->conversiondone == 0) {
+				} else if (chan->txstate == DAHDI_TXSTATE_AFTERBONK) {
 					module_printk(KERN_NOTICE, "run down complete, going on hook maybe\n");
+					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
+				} else {
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
 				}
 		} else 
@@ -8497,6 +8496,11 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
 		wake_up_interruptible(&chan->waitq);
 		break;
+	case DAHDI_TXSTATE_AFTERBONK:
+		module_printk(KERN_NOTICE, "2. Should be calling hangup now\n");
+		dahdi_hangup(chan);
+		wake_up_interruptible(&chan->waitq);
+		break;
 
 	default:
 		break;
@@ -8697,7 +8701,6 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		
 		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
 				|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
-			module_printk(KERN_NOTICE, "Calling sender with TXSTATE %d\n", chan->txstate);
 			/* Ask our sender to handle whatever pulse condition came in on the wire */
 			sender(chan, rxsig);
 
@@ -8737,14 +8740,17 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			chan->selptr = IB;
 			module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
 		}
+		/* Convert string selections to int selections. */
+		for (i = 0; i < 7; i++) {
+			chan->selections[i] = chan->txdialbuf[i] - '0';
+		}
 		chan->conversiondone = 1;
 	}
-		
-	/* Convert string selections to int selections.
-	 * OB, OG, IB, IG, FB, FT, FU 	*/
-	for (i = 0; i < 7; i++) {
-		chan->selections[i] = chan->txdialbuf[i] - '0';
+
+	if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
+		chan->selections[chan->selptr] = 99;
 	}
+
 
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
@@ -8784,11 +8790,9 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			chan->selptr = 0;
 			chan->dialing = 0;
 			if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
-				module_printk(KERN_NOTICE, "Sender completed rundown\n");
+				module_printk(KERN_NOTICE, "1. Sender completed rundown\n");
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERBONK, 500);
 				chan->conversiondone = 0;
-
-				module_printk(KERN_NOTICE, "Should be calling hangup now\n");
-				dahdi_hangup(chan);
 				break;
 
 
@@ -8806,6 +8810,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 					*/
 			} else {
+				chan->conversiondone = 0;
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 			}
 			break;
