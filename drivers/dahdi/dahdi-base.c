@@ -34,8 +34,6 @@
  * this program for more details.
  */
 
-#define HEARPULSING 1		/* likely overriden on a per channel basis */
-
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/module.h>
@@ -686,7 +684,7 @@ static void dahdi_disable_dacs(struct dahdi_chan *chan)
 
 /*!
  * Return quiescent (idle) signalling states for the various signalling types.
- * This is checking for the rx side of the hook state--what we are getting 
+ * This is checking for the rx side of the hook state--what we are getting
  * from the channel and NOT what we should be transmitting to the channel.
  */
 static int dahdi_q_sig(struct dahdi_chan *chan)
@@ -2725,7 +2723,7 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 	static const struct {
 		unsigned int sig_type;
 		/* Index is dahdi_txsig enum */
-		unsigned int bits[DAHDI_TXSIG_TOTAL];	
+		unsigned int bits[DAHDI_TXSIG_TOTAL];
 	} outs[NUM_SIGS] = {
 		{
 			/*
@@ -3842,7 +3840,6 @@ static void __do_dtmf(struct dahdi_chan *chan)
 
 					// sets 0 to 10, turns ascii into int 1 dig numbers only
 					chan->pdialcount = (c == '0') ? 10 : c - '0';
-					
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_PULSEBREAK,
 						       chan->pulsebreaktime);
 					return;
@@ -6915,7 +6912,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 						/* RPO go off hook here */
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);
 						__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
-						
+
 						/* Set a timer for the sender */
 						chan->rpdebtimer=10000;
 						chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
@@ -7917,7 +7914,7 @@ static inline void __dahdi_process_getaudio_chunk(struct dahdi_chan *ss, unsigne
 	}
 #endif
 
-	if ((!ms->confmute && ((!ms->dialing) || (HEARPULSING == 1))) || (is_pseudo_chan(ms))) {
+	if ((!ms->confmute && !ms->dialing) || (is_pseudo_chan(ms))) {
 		struct dahdi_chan *const conf_chan = ms->conf_chan;
 		/* Handle conferencing on non-clear channel and non-HDLC channels */
 		switch(ms->confmode & DAHDI_CONF_MODE_MASK) {
@@ -8683,7 +8680,6 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		}
 
 	   case DAHDI_SIG_RPO:
-		
 		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
 				|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
 			/* Ask our sender to handle whatever pulse condition came in on the wire */
@@ -8723,7 +8719,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			/* Start at Incoming Brush, selection 2 */
 			chan->selptr = IB;
 		}
-		
+
 		module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
 
 		/* Convert string selections to int selections. */
@@ -9122,7 +9118,7 @@ static inline void __dahdi_process_putaudio_chunk(struct dahdi_chan *ss, unsigne
 
 	if (ms->dialing) ms->afterdialingtimer = 50;
 	else if (ms->afterdialingtimer) ms->afterdialingtimer--;
-	if (ms->afterdialingtimer && !is_pseudo_chan(ms) && (HEARPULSING == 0)) {
+	if (ms->afterdialingtimer && !is_pseudo_chan(ms)) {
 		/* Be careful since memset is likely a macro */
 		rxb[0] = DAHDI_LIN2X(0, ms);
 		memset(&rxb[1], rxb[0], DAHDI_CHUNKSIZE - 1);  /* receive as silence if dialing */
