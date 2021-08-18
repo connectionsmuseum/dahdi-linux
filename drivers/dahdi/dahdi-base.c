@@ -2898,14 +2898,15 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 			&& !((chan->rxhooksig == DAHDI_RXSIG_ONHOOK) && (chan->itimer <= 0))) {
 			/* Do RBS signalling on the channel's behalf */
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_KEWL, DAHDI_TXSTATE_KEWL, DAHDI_KEWLTIME);
+		/* RP channels must drive the selector to tell-tale before they can be released */
 		} else if (chan->sig == DAHDI_SIG_RPO) {
 				if (chan->conversiondone == 1) {
 					/* run down the sender? */
-					module_printk(KERN_NOTICE, "attempting to run down sender\n");
+					module_printk(KERN_NOTICE, "Hung up while makeing selections.\n");
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RUNDOWN, 5000);
 					return 0;
 				} else if (chan->txstate == DAHDI_TXSTATE_AFTERBONK) {
-					module_printk(KERN_NOTICE, "run down complete, going on hook maybe\n");
+					module_printk(KERN_NOTICE, "Run down complete, going on hook.\n");
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
 				} else {
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
@@ -8681,23 +8682,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 		}
 
-	   case DAHDI_SIG_RPO: /* XXX SA:  Revertive Pulse Originating
-							* moved the pulsecount here from rbsbits 
-							* because we now know rbsbits is sane. 
-							* kicking the can down the road   */
-		switch(rxsig) {
-		    case DAHDI_RXSIG_PULSE:   /* got a 0,0 */
-				break;
-		    
-			case DAHDI_RXSIG_ONHOOK:  /* got a 1,0 */
-				break;
-
-			case DAHDI_RXSIG_OFFHOOK: /* got a 0,1 */
-			break;
-
-		    default:
-			break;
-		}
+	   case DAHDI_SIG_RPO:
 		
 		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
 				|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
@@ -8725,7 +8710,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 	int i;
 
-	/* If we have not already done dialstring conversion to remove the 'Z' */
+	/* If first time we're called on this call, handle dialstring conversion. */
 	if (chan->conversiondone == 0) {
 		/* If the first char from Asterisk is 'Z', we need office selections.
 		   If not, then we skip office selections. */
@@ -8734,12 +8719,13 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			chan->selptr = OB;
 			memmove(&chan->txdialbuf, &chan->txdialbuf[1], 7);
 			chan->txdialbuf[7] = '\0';
-			module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
 		} else {
 			/* Start at Incoming Brush, selection 2 */
 			chan->selptr = IB;
-			module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
 		}
+		
+		module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
+
 		/* Convert string selections to int selections. */
 		for (i = 0; i < 7; i++) {
 			chan->selections[i] = chan->txdialbuf[i] - '0';
@@ -8754,21 +8740,18 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
-			/* This 'if' will ensure that we ignore early transients. 
-			   We set chan->rpdebtimer when we pick up the trunk, and for the first
-			   10-20 ms, we don't want to pay attention to any pulses, because they're
-			   not real.
-			 */
+			/* For the first 10-20ms ignore any transient pulses. They're not real. */
 			if ((chan->rpdebtimer > 8700)) {
 				module_printk(KERN_NOTICE, " DEBOUNCED!\n\n");
 				return;
 			} else {
 				chan->pulsecount++;
-				module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d,  i-%d\n", chan->pulsecount-1, chan->selptr, chan->rpdebtimer);
+				module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d,  i-%d\n",
+						chan->pulsecount-1, chan->selptr, chan->rpdebtimer);
 
 				if (chan->pulsecount == chan->selections[chan->selptr]+1) {
 					module_printk(KERN_NOTICE, "       STOP\n\n\n");
-					// send (TX) onhook/offhook at the end of a selection
+					// send onhook/offhook at the end of a selection
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->winktime);
 					/* reset rpdebtimer so we can ignore early transients */
 					chan->rpdebtimer = 10000 + chan->winktime;
@@ -8789,26 +8772,13 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			chan->pulsecount = 0;
 			chan->selptr = 0;
 			chan->dialing = 0;
+			/* If we're in a rundown state then we need to send one more trunk closure
+			   then let rbs_sethook take care of the rest for us */
 			if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
 				module_printk(KERN_NOTICE, "1. Sender completed rundown\n");
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERBONK, 500);
 				chan->conversiondone = 0;
 				break;
-
-
-
-				/*  need a variable to track if still sending so hangup can decide what to do
-
-					rundown is set by hangup() and then returns without
-					resetting other vars. sets all selections to 11. 
-					now we get a signal from the channel
-					and we're in rundown so sender is called.
-					vars are still set, so sender does its thing until it gets to overflow
-					once we're in overflow in rundown state, then print this message,
-					set state to offhook, and call hangup on this chan.
-
-
-					*/
 			} else {
 				chan->conversiondone = 0;
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
