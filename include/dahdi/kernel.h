@@ -673,12 +673,10 @@ struct dahdi_hdlc {
 #define DAHDI_MAX_PRETRAINING   1000	/*!< 1000ms max pretraining time */
 
 /* Revertive Pulse definitions */
-#define DAHDI_DEFAULT_RPDEBOUNCETIME 80		/* Time after trunk closure where we  
-											 * should start listening  */
-#define DAHDI_DEFAULT_RPNORMALTIME 22		/* Tip has battery  No effect on count */
-#define DAHDI_DEFAULT_RPGROUNDTIME 22		/* Tip is grounded No effect on count */
-#define DAHDI_DEFAULT_RPAFTERTIME 250		/*!< 750ms between dial pulse digits */
-#define DAHDI_DEFAULT_BONKTIME 100			/* Tell-Tale, Overflow, Incoming Advance */
+#define DAHDI_DEFAULT_RPMAKETIME 22			/* Tip has battery. */
+#define DAHDI_DEFAULT_RPBREAKTIME 22		/* Tip is grounded. */
+#define DAHDI_DEFAULT_RPAFTERTIME 250		/* This might not be needed. */
+#define DAHDI_DEFAULT_BONKTIME 200			/* Tell-Tale, Overflow, Incoming Advance */
 
 #define DAHDI_RPMINTIME (20 * 8)	/* A selector should ground T for at least 20 ms */
 #define DAHDI_RPMAXTIME (100 * 8)	/* A selector shouldn't ground T for more than 100 ms */
@@ -706,6 +704,7 @@ enum dahdi_txsig {
 	DAHDI_TXSIG_START,   /*!< Start / Ring */
 	DAHDI_TXSIG_KEWL,    /*!< Drop battery if possible */
 	DAHDI_TXSIG_PULSE,
+	DAHDI_TXSIG_REVERSAL,
 	/*! Leave this as the last entry */
 	DAHDI_TXSIG_TOTAL,
 };

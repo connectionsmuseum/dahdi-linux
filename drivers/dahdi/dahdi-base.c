@@ -2786,9 +2786,10 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 			.bits[DAHDI_TXSIG_START] 		= DAHDI_BITS_ABCD,
 		}, {
 			.sig_type = DAHDI_SIG_RPT,		// RPT used on RPO card. Physical sender, Asterisk selector.
-			.bits[DAHDI_TXSIG_ONHOOK]	= DAHDI_BITS_AC,
-			.bits[DAHDI_TXSIG_OFFHOOK]	= DAHDI_BITS_BD,
-			.bits[DAHDI_TXSIG_PULSE]	= 0,
+			.bits[DAHDI_TXSIG_ONHOOK]		= DAHDI_BITS_AC,
+			.bits[DAHDI_TXSIG_OFFHOOK]		= DAHDI_BITS_AC,
+			.bits[DAHDI_TXSIG_PULSE]		= 0,
+			.bits[DAHDI_TXSIG_REVERSAL]		= DAHDI_BITS_BD,
 		}
 	};
 	int x;
@@ -3001,12 +3002,11 @@ static int initialize_channel(struct dahdi_chan *chan)
 
 	chan->rxwinktime = DAHDI_DEFAULT_RXWINKTIME;
 	chan->rxflashtime = DAHDI_DEFAULT_RXFLASHTIME;
-	if (chan->sig == DAHDI_SIG_RPO) {
-		module_printk(KERN_NOTICE, "Using RPO debounce timers on chan %d", chan->channo);
-		chan->debouncetime = DAHDI_DEFAULT_RPDEBOUNCETIME;		// XXX SA debounce
-		chan->pulsemaketime = DAHDI_DEFAULT_RPNORMALTIME;
-		chan->pulsebreaktime = DAHDI_DEFAULT_RPGROUNDTIME;
-		chan->pulseaftertime = DAHDI_DEFAULT_PULSEAFTERTIME;
+	if (chan->sig == DAHDI_SIG_RPT) {
+		module_printk(KERN_NOTICE, "Using RP debounce timers on chan %d", chan->channo);
+		chan->pulsemaketime = DAHDI_DEFAULT_RPMAKETIME;
+		chan->pulsebreaktime = DAHDI_DEFAULT_RPBREAKTIME;
+		chan->pulseaftertime = DAHDI_DEFAULT_RPAFTERTIME;
 	} else {
 		chan->debouncetime = DAHDI_DEFAULT_DEBOUNCETIME;
 		chan->pulsemaketime = DAHDI_DEFAULT_PULSEMAKETIME;
@@ -3017,6 +3017,7 @@ static int initialize_channel(struct dahdi_chan *chan)
 	/* Initialize RBS timers */
 	chan->itimerset = chan->itimer = chan->otimer = 0;
 	chan->ringdebtimer = 0;
+	chan->rpdebtimer = 0;
 
 	/* Reset conferences */
 	reset_conf(chan);
