@@ -8681,19 +8681,27 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		}
 
 	   case DAHDI_SIG_RPO:
-		if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
-				|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
-			/* Ask our sender to handle whatever pulse condition came in on the wire */
-			sender(chan, rxsig);
+			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
+					|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
+				/* Ask our sender to handle whatever pulse condition came in on the wire */
+				sender(chan, rxsig);
 
-			/* Hammer Asterisk with dialcomplete events to keep audio passing thru
-			   XXX SA: Does this even work like you think it does? */
-			if (chan->selptr == 0) {
-				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
+				/* Hammer Asterisk with dialcomplete events to keep audio passing thru
+				   XXX SA: Does this even work like you think it does? */
+				if (chan->selptr == 0) {
+					__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
+				}
 			}
-		}
+			break;
+	   case DAHDI_SIG_RPT:
+			if (chan->txstate == DAHDI_TXSTATE_ONHOOK) {
+				__qevent(chan,DAHDI_EVENT_RINGOFFHOOK);
+			}
+
+
+			break;
 	   default:
-		break;
+			break;
 	}
 }
 
