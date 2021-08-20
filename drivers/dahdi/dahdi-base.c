@@ -163,6 +163,9 @@ enum dahdi_txstate {
 	DAHDI_TXSTATE_PULSEBREAK,
 	DAHDI_TXSTATE_PULSEMAKE,
 	DAHDI_TXSTATE_PULSEAFTER,
+	DAHDI_TXSTATE_RPBREAK,
+	DAHDI_TXSTATE_RPMAKE,
+	DAHDI_TXSTATE_RPAFTER,
 	DAHDI_TXSTATE_RUNDOWN,
 	DAHDI_TXSTATE_AFTERBONK,
 };
@@ -2802,8 +2805,8 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 		module_printk(KERN_NOTICE, "dahdi_rbs: Tried to set RBS hook state on non-RBS channel %s\n", chan->name);
 		return;
 	}
-	if ((txsig > 3) || (txsig < 0)) {
-		module_printk(KERN_NOTICE, "dahdi_rbs: Tried to set RBS hook state %d (> 3) on  channel %s\n", txsig, chan->name);
+	if ((txsig > 4) || (txsig < 0)) {
+		module_printk(KERN_NOTICE, "dahdi_rbs: Tried to set RBS hook state %d (> 4) on  channel %s\n", txsig, chan->name);
 		return;
 	}
 	if (!chan->span->ops->rbsbits && !chan->span->ops->hooksig) {
@@ -2815,6 +2818,7 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 	if (chan->sig == DAHDI_SIG_DACS_RBS)
 		return;
 	chan->txstate = txstate;
+	module_printk(KERN_NOTICE, "rbsbits txstate-%d, otimer-%d\n", chan->txstate, chan->otimer); 
 
 	/* if tone signalling */
 	if (chan->sig == DAHDI_SIG_SF) {
@@ -2841,9 +2845,7 @@ static void dahdi_rbs_sethook(struct dahdi_chan *chan, int txsig, int txstate,
 	} else {
 		for (x = 0; x < NUM_SIGS; x++) {
 			if (outs[x].sig_type == chan->sig) {
-#ifdef CONFIG_DAHDI_DEBUG
 				module_printk(KERN_NOTICE, "Setting bits to %d for channel %s state %d in %d signalling\n", outs[x].bits[txsig], chan->name, txsig, chan->sig);
-#endif
 				chan->txhooksig = txsig;
 				chan->txsig = outs[x].bits[txsig];
 				chan->span->ops->rbsbits(chan, chan->txsig);
@@ -8365,6 +8367,9 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 	int len = 0;
 	/* Called with chan->lock held */
 
+	// XXX SA
+	module_printk(KERN_NOTICE, "otimer expired, txstate %d\n", chan->txstate);
+
 	chan->otimer = 0;
 	/* Move to the next timer state */
 	switch(chan->txstate) {
@@ -8490,6 +8495,40 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		__do_dtmf(chan);
 		wake_up_interruptible(&chan->waitq);
 		break;
+
+
+	/* XXX SA: I really hate to do this, but no matter how I twist my brain,
+		it doesn't make sense to talk about revertive pulse in terms of on and
+		off hook. There is just no analogy for that, since the on hook state of
+		a panel selector is identical to the off hook state. We must instead 
+		call it off hook and *PULSE*. */
+    case DAHDI_TXSTATE_RPBREAK:
+		module_printk(KERN_NOTICE, "STATE RP-BREAK, SIG: %x\n", chan->txsig);
+        dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPMAKE,
+            chan->pulsemaketime);
+        wake_up_interruptible(&chan->waitq);
+        break;
+
+    case DAHDI_TXSTATE_RPMAKE:
+		dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK,
+			DAHDI_TXSTATE_RPBREAK, chan->pulsebreaktime);
+		module_printk(KERN_NOTICE, "STATE RP-MAKE, SIG: %x\n", chan->txsig);
+		chan->pulsecount++;
+        chan->txstate = DAHDI_TXSTATE_RPAFTER;
+        chan->otimer = chan->pulseaftertime * DAHDI_CHUNKSIZE;
+        wake_up_interruptible(&chan->waitq);
+        break;
+
+    case DAHDI_TXSTATE_RPAFTER:
+        chan->txstate = DAHDI_TXSTATE_OFFHOOK;
+		module_printk(KERN_NOTICE, "STATE RP-AFTER, SIG: %x\n", chan->txsig);
+        commutator(chan, DAHDI_RXSIG_OFFHOOK);
+        wake_up_interruptible(&chan->waitq);
+        break;
+
+
+
+
 
 	case DAHDI_TXSTATE_RUNDOWN:
 		dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
@@ -8681,8 +8720,8 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		}
 
 	   case DAHDI_SIG_RPO:
-			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->dialing == 1)
-					|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN)) {
+			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && ((chan->dialing == 1)
+					|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN))) {
 				/* Ask our sender to handle whatever pulse condition came in on the wire */
 				sender(chan, rxsig);
 
@@ -8697,6 +8736,9 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			if (chan->txstate == DAHDI_TXSTATE_ONHOOK) {
 				__qevent(chan,DAHDI_EVENT_RINGOFFHOOK);
 			}
+			module_printk(KERN_NOTICE, "rpdebtimer %d\n", chan->rpdebtimer);
+			if ((chan->rpdebtimer <= 0 ) || (chan->rpdebtimer >= 8700))
+				commutator(chan, rxsig);
 
 
 			break;
@@ -8739,7 +8781,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	}
 
 	if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
-		chan->selections[chan->selptr] = 99;
+		chan->selections[chan->selptr] = 101;
 	}
 
 
@@ -8794,6 +8836,44 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	}
 
 }
+
+void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
+{
+	int *pulsecount = &chan->pulsecount;
+	int *selections = chan->selections;
+	
+	switch(rxsig) {
+		case DAHDI_RXSIG_OFFHOOK:
+			module_printk(KERN_NOTICE, "GOT OFFHOOK, selptr %i\n", chan->selptr);
+			dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPBREAK,
+						   chan->pulsebreaktime);
+			chan->rpdebtimer = 10000;
+			break;
+		case DAHDI_RXSIG_ONHOOK:
+			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
+			selections[chan->selptr] = *pulsecount;
+			module_printk(KERN_NOTICE, "GOT ONHOOK, pulses %d\n", *pulsecount);
+			chan->selptr++;
+			chan->pulsecount++; //temporary?
+			__qevent(chan, DAHDI_EVENT_PULSEDIGIT | ('0' + *pulsecount));
+			*pulsecount = 0;
+			chan->rpdebtimer = 10000;
+			break;
+		default:
+			break;
+	}
+	
+	if ((*pulsecount >= 12) || ((chan->selptr > 6) && rxsig == DAHDI_RXSIG_ONHOOK)) {
+		dahdi_rbs_sethook(chan, DAHDI_TXSIG_REVERSAL, DAHDI_TXSTATE_OFFHOOK, 500);
+		module_printk(KERN_NOTICE, "   SENT REVERSAL, pulses %d\n", *pulsecount);
+		*pulsecount = 12;
+	}
+	return;
+
+}
+
+
+
 
 /**
  * dahdi_hooksig() - send a signal on a channel to userspace
@@ -10081,8 +10161,16 @@ int _dahdi_transmit(struct dahdi_span *span)
 			}
 			if (chan->otimer) {
 				chan->otimer -= DAHDI_CHUNKSIZE;
+				if (chan->otimer > 0)
+					module_printk(KERN_NOTICE, "otimer decrementing to: %d\n", chan->otimer);
 				if (chan->otimer <= 0)
 					__rbs_otimer_expire(chan);
+			}
+			/* RP transient debounce timer */
+			if (chan->rpdebtimer) {
+				chan->rpdebtimer -= DAHDI_CHUNKSIZE;
+				if (chan->rpdebtimer <= 0)
+					chan->rpdebtimer = 0;
 			}
 		}
 		spin_unlock(&chan->lock);
@@ -10095,6 +10183,7 @@ int _dahdi_transmit(struct dahdi_span *span)
 			span->maintstat = 0;
 		}
 	}
+
 	return 0;
 }
 EXPORT_SYMBOL(_dahdi_transmit);

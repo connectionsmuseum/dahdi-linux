@@ -145,6 +145,8 @@ static inline char *txsig2str(enum dahdi_txsig sig)
 		return "TXSIG_KEWL";	/* Drop battery if possible */
 	case DAHDI_TXSIG_PULSE:
 		return "PULSE";
+	case DAHDI_TXSIG_REVERSAL:
+		return "REVERSAL";
 	case DAHDI_TXSIG_TOTAL:
 		break;
 	}

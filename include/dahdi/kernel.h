@@ -1243,6 +1243,9 @@ void dahdi_hooksig(struct dahdi_chan *chan, enum dahdi_rxsig rxsig);
 /*! \brief Turn DAHDI into a panel sender */
 void sender(struct dahdi_chan *chani, enum dahdi_rxsig rxsig);
 
+/* \brief Turn DAHDI into a panel selector */
+void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig);
+
 /*! \brief Queue an event on a channel */
 void dahdi_qevent_nolock(struct dahdi_chan *chan, int event);
 
