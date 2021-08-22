@@ -8500,26 +8500,24 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		call it off hook and *PULSE*. */
     case DAHDI_TXSTATE_RPBREAK:
 		module_printk(KERN_NOTICE, "STATE RP-BREAK (%x)\n", chan->txsig);
-        dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPMAKE,
+        dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_RPMAKE,
             chan->pulsemaketime);
         wake_up_interruptible(&chan->waitq);
         break;
 
     case DAHDI_TXSTATE_RPMAKE:
-		if ((chan->pulsecount >= 12) || (chan->selptr > 6)) {
+		if ((chan->pulsecount >= 12) || (chan->selptr > 4)) {
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RPAFTER, 0);
 			module_printk(KERN_NOTICE, "---------SENT REVERSAL, pulses %d\n", chan->pulsecount);
 			chan->selptr = 0;	
-			//*pulsecount = 13;
-			//dahdi_hangup(chan);		// just fuck off for now
 			wake_up_interruptible(&chan->waitq);
 			break;
 		}
 
-		dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK,
+		module_printk(KERN_NOTICE, "STATE RP-MAKE (%x)\n", chan->txsig);
+		dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE,
 			DAHDI_TXSTATE_RPBREAK, chan->pulsebreaktime);
 		chan->pulsecount++;
-		module_printk(KERN_NOTICE, "STATE RP-MAKE (%x)\n", chan->txsig);
         chan->otimer = chan->pulseaftertime * DAHDI_CHUNKSIZE;
         wake_up_interruptible(&chan->waitq);
         break;
@@ -8851,27 +8849,27 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	switch(rxsig) {
 		case DAHDI_RXSIG_OFFHOOK:
 			module_printk(KERN_NOTICE, "GOT OFFHOOK, selptr: %i, pulses: %d\n", chan->selptr, *pulsecount);
-			dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPBREAK,
-						   chan->pulsebreaktime);
+			dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPBREAK, chan->pulsebreaktime);
 			chan->rpdebtimer = 10000;
 			break;
 		case DAHDI_RXSIG_ONHOOK:
-			selections[chan->selptr] = *pulsecount;
-			module_printk(KERN_NOTICE, "GOT ONHOOK, selptr: %i, pulses %d\n", chan->selptr, *pulsecount);
-			chan->selptr++;
-			__qevent(chan, DAHDI_EVENT_PULSEDIGIT | ('0' + *pulsecount));
-			*pulsecount = 0;
-			chan->rpdebtimer = 10000;
+			if ((*pulsecount >= 12) || (chan->selptr > 4)) {
+				module_printk(KERN_NOTICE, "GOT ONHOOK. Breaking out of comm. Nothing to do.");
+				break;
+			} else {
+				selections[chan->selptr] = *pulsecount;
+				module_printk(KERN_NOTICE, "GOT ONHOOK, selptr: %i, pulses %d\n", chan->selptr, *pulsecount);
+				chan->selptr++;
+				__qevent(chan, DAHDI_EVENT_PULSEDIGIT | ('0' + *pulsecount));
+				*pulsecount = 0;
+				chan->rpdebtimer = 10000;
 
-			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
-			// here i need to set rpafter which will do the cleanup and start pulsing again...
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
+			}
 			break;
 		default:
 			break;
 	}
-	
-	return;
-
 }
 
 
