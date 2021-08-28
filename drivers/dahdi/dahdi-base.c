@@ -1632,7 +1632,7 @@ static void close_channel(struct dahdi_chan *chan)
 	chan->dacs_chan = NULL;
 
     memset(chan->selections, 0, sizeof(chan->selections));
-	chan->selptr = 0;
+	chan->selidx = 0;
 	chan->conversiondone = 0;
 
 	if (is_gain_allocated(chan))
@@ -2898,7 +2898,7 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 			&& !((chan->rxhooksig == DAHDI_RXSIG_ONHOOK) && (chan->itimer <= 0))) {
 			/* Do RBS signalling on the channel's behalf */
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_KEWL, DAHDI_TXSTATE_KEWL, DAHDI_KEWLTIME);
-		/* RP channels must drive the selector to tell-tale before they can be released */
+		/* RPO channels must drive the selector to tell-tale before they can be released */
 		} else if (chan->sig == DAHDI_SIG_RPO) {
 				/* conversiondone used as a flag to say we've already begun selections */
 				if (chan->conversiondone == 1) {
@@ -2951,7 +2951,8 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 	chan->curtone = NULL;
 	chan->pdialcount = 0;
 	chan->cadencepos = 0;
-	chan->selptr = 0;
+	chan->selidx = 0;
+	chan->pulsecount = 0;
 	chan->txdialbuf[0] = 0;
 
 	return res;
@@ -8494,11 +8495,10 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		break;
 
 
-	/* XXX SA: I really hate to do this, but no matter how I twist my brain,
-		it doesn't make sense to talk about revertive pulse in terms of on and
-		off hook. There is just no analogy for that, since the on hook state of
-		a panel selector is identical to the off hook state. We must instead 
-		call it off hook and *PULSE*. */
+		/*
+		   XXX SA: RP requires different txstates than the rest of the signaling
+			types.
+		*/
     case DAHDI_TXSTATE_RPBREAK:
 		module_printk(KERN_NOTICE, "STATE RP-BREAK (%x)\n", chan->txsig);
         dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_RPMAKE,
@@ -8507,10 +8507,10 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
         break;
 
     case DAHDI_TXSTATE_RPMAKE:
-		if ((chan->pulsecount >= 12) || (chan->selptr > 4)) {
+		if ((chan->pulsecount >= 12) || (chan->selidx > 4)) {
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERBONK, 500);
 			module_printk(KERN_NOTICE, "---------SENT REVERSAL, pulses %d\n", chan->pulsecount);
-			chan->selptr = 0;	
+			chan->selidx = 0;
 			chan->pulsecount = 0;
 			wake_up_interruptible(&chan->waitq);
 			break;
@@ -8524,7 +8524,7 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
         wake_up_interruptible(&chan->waitq);
         break;
 
-    case DAHDI_TXSTATE_RPAFTER:
+	case DAHDI_TXSTATE_RPAFTER:		// XXX SA: Might be able to remove this
         chan->txstate = DAHDI_TXSTATE_OFFHOOK;
 		module_printk(KERN_NOTICE, "STATE RP-AFTER, txsig: %x\n", chan->txsig);
         wake_up_interruptible(&chan->waitq);
@@ -8727,23 +8727,15 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 				/* Hammer Asterisk with dialcomplete events to keep audio passing thru
 				   XXX SA: Does this even work like you think it does? */
-				if (chan->selptr == 0) {
+				if (chan->selidx == 0) {
 					__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);
 				}
 			}
 			break;
 	   case DAHDI_SIG_RPT:
-#if 0
-			if (chan->txstate == DAHDI_TXSTATE_ONHOOK) {
-				__qevent(chan,DAHDI_EVENT_RINGOFFHOOK);
-			}
-			
-			if (((chan->rpdebtimer <= 0 ) || (chan->rpdebtimer >= 8700)) &&
-					(chan->pulsecount <= 12))
-#endif
 
 			/* if we're talking and calling sub hung up */
-			if (chan->txstate == DAHDI_TXSTATE_OFFHOOK) || (rxsig == DAHDI_RXSIG_ONHOK) {
+			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) || (rxsig == DAHDI_RXSIG_ONHOOK)) {
 				dahdi_hangup(chan);
 				break;
 			} else {
@@ -8772,11 +8764,11 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		/* If the first char from Asterisk is 'Z', we need office selections.
 		   If not, then we skip office selections. */
 		if (chan->txdialbuf[0] == 'Z') {
-			chan->selptr = OB;
+			chan->selidx = OB;
 			memmove(&chan->txdialbuf, &chan->txdialbuf[1], 7);
 			chan->txdialbuf[7] = '\0';
 		} else {
-			chan->selptr = IB;
+			chan->selidx = IB;
 		}
 
 		module_printk(KERN_NOTICE, "txdialbuf str %s\n", chan->txdialbuf);
@@ -8789,7 +8781,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	}
 
 	if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
-		chan->selections[chan->selptr] = 101;
+		chan->selections[chan->selidx] = 101;
 	}
 
 
@@ -8802,16 +8794,16 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			} else {
 				chan->pulsecount++;
 				module_printk(KERN_NOTICE, "Pulse: %d, SELECTION: %d,  i-%d\n",
-						chan->pulsecount-1, chan->selptr, chan->rpdebtimer);
+						chan->pulsecount-1, chan->selidx, chan->rpdebtimer);
 
-				if (chan->pulsecount == chan->selections[chan->selptr]+1) {
+				if (chan->pulsecount == chan->selections[chan->selidx]+1) {
 					module_printk(KERN_NOTICE, "       STOP\n\n\n");
 					// send onhook/offhook at the end of a selection
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->winktime);
 					/* reset rpdebtimer so we can ignore early transients */
 					chan->rpdebtimer = 10000 + chan->winktime;
 					chan->pulsecount=0;       	// reset positions and then
-					chan->selptr++;           // look at the next selection
+					chan->selidx++;           // look at the next selection
 				}
 			}
 			break;
@@ -8819,13 +8811,13 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 		case DAHDI_RXSIG_OFFHOOK:
 			module_printk(KERN_NOTICE, "REVERSAL\n");
-			if (chan->selptr >= FB) {
+			if (chan->selidx >= FB) {
 				module_printk(KERN_NOTICE, "SELECTIONS COMPLETE!\n");
 			} else {
 				module_printk(KERN_NOTICE, "OVERFLOW!\n");
 			}
 			chan->pulsecount = 0;
-			chan->selptr = 0;
+			chan->selidx = 0;
 			chan->dialing = 0;
 			/* If we're in a rundown state then we need to send one more trunk closure
 			   then let rbs_sethook take care of the rest for us */
@@ -8859,22 +8851,22 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	
 	switch(rxsig) {
 		case DAHDI_RXSIG_OFFHOOK:
-			module_printk(KERN_NOTICE, "GOT OFFHOOK, selptr: %i, pulses: %d\n", chan->selptr, *pulsecount);
+			module_printk(KERN_NOTICE, "GOT OFFHOOK, selidx: %i, pulses: %d\n", chan->selidx, *pulsecount);
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPBREAK, chan->pulsebreaktime);
 			break;
 		case DAHDI_RXSIG_ONHOOK:
 			/* telltale is handled in otimer_expire(), so we can just.. */
-			module_printk(KERN_NOTICE, "GOT ONHOOK, selptr: %i, pulses %d\n", chan->selptr, *pulsecount);
-			selections[chan->selptr] = *pulsecount;
+			module_printk(KERN_NOTICE, "GOT ONHOOK, selidx: %i, pulses %d\n", chan->selidx, *pulsecount);
+			selections[chan->selidx] = *pulsecount;
 			__qevent(chan, DAHDI_EVENT_PULSEDIGIT | ('0' + *pulsecount));
-			chan->selptr++;
+			chan->selidx++;
 
 			/* Clever trick. Set a timer for 10 sec, then go on hook, waiting
 			   for next selection to start. If still ONHOOK after 10 sec, then go straight
 			   to AFTERBONK, which hangs up the channel. If we get an RXSIG_OFFHOOK, then
 			   TXSTATE_AFTERBONK should be cancelled, and signalling will continue. */
 			chan->rpdebtimer = 10000 * DAHDI_CHUNKSIZE;
-			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK chan->rpdebtimer);
+			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, chan->rpdebtimer);
 			*pulsecount = 0;
 			break;
 		default:
