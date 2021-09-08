@@ -8503,11 +8503,12 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		module_printk(KERN_NOTICE, "STATE RP-BREAK (%x)\n", chan->txsig);
         dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_RPMAKE,
             chan->pulsemaketime);
+		chan->pulsecount++;
         wake_up_interruptible(&chan->waitq);
         break;
 
     case DAHDI_TXSTATE_RPMAKE:
-		if ((chan->pulsecount >= 12) || (chan->selidx > 4)) {
+		if (chan->pulsecount >= 12) {
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERBONK, 500);
 			module_printk(KERN_NOTICE, "---------SENT REVERSAL, pulses %d\n", chan->pulsecount);
 			chan->selidx = 0;
@@ -8519,14 +8520,18 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		module_printk(KERN_NOTICE, "STATE RP-MAKE (%x)\n", chan->txsig);
 		dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE,
 			DAHDI_TXSTATE_RPBREAK, chan->pulsebreaktime);
-		chan->pulsecount++;
         chan->otimer = chan->pulseaftertime * DAHDI_CHUNKSIZE;
         wake_up_interruptible(&chan->waitq);
         break;
 
 	case DAHDI_TXSTATE_RPAFTER:		// XXX SA: Might be able to remove this
-        chan->txstate = DAHDI_TXSTATE_OFFHOOK;
-		module_printk(KERN_NOTICE, "STATE RP-AFTER, txsig: %x\n", chan->txsig);
+		module_printk(KERN_NOTICE, "STATE RP-AFTER (%x), instance %d\n", chan->txsig, chan->conversiondone);
+		if (chan->conversiondone == 0) {
+			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_RPAFTER, 150);
+			chan->conversiondone = 1;
+		} else {
+        	chan->txstate = DAHDI_TXSTATE_ONHOOK;
+		}
         wake_up_interruptible(&chan->waitq);
         break;
 
@@ -8536,7 +8541,8 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		break;
 
 	case DAHDI_TXSTATE_AFTERBONK:
-		module_printk(KERN_NOTICE, "2. Should be calling hangup now\n");
+		module_printk(KERN_NOTICE, "AFTERBONK: Hanging up...\n");
+		module_printk(KERN_NOTICE, "========================\n");
 		dahdi_hangup(chan);
 		wake_up_interruptible(&chan->waitq);
 		break;
@@ -8735,10 +8741,11 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	   case DAHDI_SIG_RPT:
 
 			/* if we're talking and calling sub hung up */
-			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) || (rxsig == DAHDI_RXSIG_ONHOOK)) {
+			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && (chan->selidx >= IA)) {
+				module_printk(KERN_NOTICE, "sub hung up. going on hook\n");
 				dahdi_hangup(chan);
 				break;
-			} else {
+			} else if (chan->selidx <= IA) {
 				commutator(chan, rxsig);
 			}
 			break;
@@ -8849,14 +8856,42 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	int *pulsecount = &chan->pulsecount;
 	int *selections = chan->selections;
 	
+	// We are not doing office selections in RPT yet.
+	if (chan->selidx == OB) {
+		chan->selidx = IB;
+	}
+
 	switch(rxsig) {
 		case DAHDI_RXSIG_OFFHOOK:
 			module_printk(KERN_NOTICE, "GOT OFFHOOK, selidx: %i, pulses: %d\n", chan->selidx, *pulsecount);
+
+			if (chan->selidx >= IA) {
+				module_printk(KERN_NOTICE, "Finished FU selections. Sending reversal!");
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RPAFTER, 150);
+				break;
+			}
+
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPBREAK, chan->pulsebreaktime);
+			chan->rpdebtimer = 1000 * DAHDI_CHUNKSIZE;
 			break;
 		case DAHDI_RXSIG_ONHOOK:
-			/* telltale is handled in otimer_expire(), so we can just.. */
+#if 0
+			if (chan->rpdebtimer > 7000) {
+				module_printk(KERN_NOTICE, "DEBOUNCE!");
+				chan->rpdebtimer = 1000 * DAHDI_CHUNKSIZE;
+				break;
+			}
+#endif
 			module_printk(KERN_NOTICE, "GOT ONHOOK, selidx: %i, pulses %d\n", chan->selidx, *pulsecount);
+
+			if (chan->selidx > FU) {
+				// this is here for testing to make the line hangup when i release
+				chan->rpdebtimer = 1000 * DAHDI_CHUNKSIZE;
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, chan->rpdebtimer);
+				break;
+			}
+
+			/* telltale is handled in otimer_expire(), so we can just.. */
 			selections[chan->selidx] = *pulsecount;
 			__qevent(chan, DAHDI_EVENT_PULSEDIGIT | ('0' + *pulsecount));
 			chan->selidx++;
@@ -8865,7 +8900,7 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			   for next selection to start. If still ONHOOK after 10 sec, then go straight
 			   to AFTERBONK, which hangs up the channel. If we get an RXSIG_OFFHOOK, then
 			   TXSTATE_AFTERBONK should be cancelled, and signalling will continue. */
-			chan->rpdebtimer = 10000 * DAHDI_CHUNKSIZE;
+			chan->rpdebtimer = 1000 * DAHDI_CHUNKSIZE;
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, chan->rpdebtimer);
 			*pulsecount = 0;
 			break;
