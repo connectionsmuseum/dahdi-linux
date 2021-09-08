@@ -2952,6 +2952,7 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 	chan->pdialcount = 0;
 	chan->cadencepos = 0;
 	chan->selidx = 0;
+	chan->conversiondone = 0;
 	chan->pulsecount = 0;
 	chan->txdialbuf[0] = 0;
 
