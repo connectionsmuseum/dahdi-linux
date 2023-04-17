@@ -6916,12 +6916,13 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 					if (chan->sig == DAHDI_SIG_RPO) { 		// SA added bracket to else aug 2
 						module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
 						/* RPO go off hook here */
+						/* sender will take control via __dahdi_hooksig_pvt()
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);
 						__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
 
 						/* Set a timer for the sender */
-						chan->rpdebtimer=10000;
-						chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
+						chan->rpdebtimer=20000;
+						chan->pulsecount = 0;		// Super critical to always start at 0. XXX SA
 					} else {
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
 					}
@@ -8503,14 +8504,6 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		wake_up_interruptible(&chan->waitq);
 		break;
 
-<<<<<<< Updated upstream
-
-		/*
-		   XXX SA: RP requires different txstates than the rest of the signaling
-			types.
-		*/
-=======
->>>>>>> Stashed changes
     case DAHDI_TXSTATE_RPBREAK:
 		/* Got here from AFTERSTART or RPMAKE. 
 		   Current state: Pulse
@@ -8562,7 +8555,6 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 			case 1:
 				/* CD 11.815 (RV3) breaks T+R, terminates reversal */
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPAFTER, 50);
-				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);	// XXX SA: do i need this?
 				chan->seqswitch = 2;
 				break;
 			case 2:
@@ -8570,6 +8562,7 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 				   Normal polarity remains until called sub answers, which is 
 				   controlled by Asterisk. Our state machine is finished. */
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_RPAFTER, 100);
+				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);	// XXX SA: do i need this?
 				chan->seqswitch = 3;
 				chan->rpdebtimer = 250 * DAHDI_CHUNKSIZE; // 2 seconds?
 				break;
@@ -8784,18 +8777,30 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 				}
 			}
 			break;
+
 	   case DAHDI_SIG_RPT:
 
-			/* if we're talking and calling sub hung up */
-			// XXX TODO: figure out why and how asterisk is fucking with
-			// hookstate after call connects.
-			if ((chan->seqswitch >= 2) && (chan->rpdebtimer <= 0) &&
-					(rxsig == DAHDI_RXSIG_ONHOOK)) {
-				module_printk(KERN_NOTICE, "sub hung up. going on hook\n");
-				dahdi_hangup(chan);
-				break;
-			} else if  ((chan->selidx <= IA) && (chan->seqswitch == 0)) {
+			/* if we're signaling, just send us to commutator() */
+			// XXX SA this should all be a select case block instaed
+			// This should also specify which signal we recieved so we don't always land here.
+			if ((chan->selidx <= IA) && (chan->seqswitch == 0)) {
 				commutator(chan, rxsig);
+				module_printk(KERN_NOTICE, "Got hook transition, calling commutator");
+
+			/* Below is complicated, because we will get a momentary on-hook (OPEN) from the sub sender
+			   after selections are complete. (CD-25013-01 Section 12.2)
+			   We have to account for that, which we do by advancing our sequence switch one step forward before saing
+			   "OK, we're connected now." This has no effect except to ignore the "spurious" ON_HOOK state we get from the
+			   sub sender. In this case, we get here after rbs_otimer_expire() does it's thing.
+			   In other cases, we could legitimately get here if the calling sub hangs up.
+			 */
+			} else if (chan->seqswitch == 3 && rxsig == DAHDI_RXSIG_ONHOOK) {
+				module_printk(KERN_NOTICE, "Sub sender opened loop momentarily after pulsing. Advance to 4\n");
+				chan->seqswitch = 4;
+			} else if (chan->seqswitch >= 4 && rxsig == DAHDI_RXSIG_ONHOOK) {
+				module_printk(KERN_NOTICE, "Detected ONHOOK in seqswitch 4. Going to AFTERBONK");
+				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, 30);	// AFTERBONK handles the hangup for us, just send it there and go away
+				chan->seqswitch = 0;
 			}
 			break;
 	   default:
@@ -8810,7 +8815,11 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
   * Counting and storing pulses, and debouncing transients.
   * Gracefully driving the distant selector to telltale if the
   * subscriber hangs up in the middle of selections. (TXSTATE_RUNDOWN)
-  */
+
+  * ref: CD-21193-02 Subscriber Sender Non-Coin (Panel)
+  *      CD-25012-01 Subscriber Sender (No. 1 Crossbar)
+
+ **/
 void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 {
 	int i;
@@ -8844,7 +8853,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	switch(rxsig) {
 		case DAHDI_RXSIG_PULSE:
 			/* For the first 10-20ms ignore any transient pulses. They're not real. */
-			if ((chan->rpdebtimer > 8700)) {
+			if ((chan->rpdebtimer > 18700)) {
 				module_printk(KERN_NOTICE, " DEBOUNCED!\n\n");
 				return;
 			} else {
@@ -8857,7 +8866,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 					// send onhook/offhook at the end of a selection
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_FLASH, chan->winktime);
 					/* reset rpdebtimer so we can ignore early transients */
-					chan->rpdebtimer = 10000 + chan->winktime;
+					chan->rpdebtimer = 20000 + chan->winktime;
 					chan->pulsecount=0;       	// reset positions and then
 					chan->selidx++;           // look at the next selection
 				}
@@ -8898,8 +8907,13 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
  * rbs_sethook and otimer_expire.
  * When it receives an on-hook, it stores the number of pulses it sent
  * and increments the selections counter to store the next pulses.
- * Implements a time measure to release if the originating side hangs up
- */
+  
+ * Implements a time measure to release if the originating side hangs up.
+ * This is to ensure reliability when dealing with badly behaved trunk test frames.
+ *
+ * ref: CD-25013-01 Full Selector Terminating Sender
+**/
+
 void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 {
 	int *pulsecount = &chan->pulsecount;
@@ -9061,7 +9075,15 @@ void dahdi_rbsbits(struct dahdi_chan *chan, int cursig)
 		}
 		break;
 
+
+		/* It can be meaningful to talk about RP senders as being on or off hook. They can send
+		   forward two states only:
+		   OPEN LOOP: ON HOOK
+		   CLOSED LOOP: OFF HOOK
+		*/
+
 	   case DAHDI_SIG_RPT:				// physical bits come from sender, passed to userspace
+		module_printk(KERN_NOTICE, "detected state change in dahdi_rbsbits on RPT: %02x\n", chan->rxsig);
 		if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == (DAHDI_ABIT | DAHDI_BBIT)) {	/* 1,1 Closed */
 			__dahdi_hooksig_pvt(chan, DAHDI_RXSIG_OFFHOOK);
 		} else if ((cursig & (DAHDI_ABIT | DAHDI_BBIT)) == 0) {						/* 0,0 Open */
