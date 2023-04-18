@@ -1566,7 +1566,6 @@ static void close_channel(struct dahdi_chan *chan)
 #endif
 
 	might_sleep();
-
 	if (chan->conf_chan &&
 	    ((DAHDI_CONF_MONITOR_RX_PREECHO == chan->confmode) ||
 	     (DAHDI_CONF_MONITOR_TX_PREECHO == chan->confmode) ||
@@ -6886,7 +6885,7 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 			case DAHDI_OFFHOOK:
 				module_printk(KERN_WARNING, "DAHDI ioctl. Now OFFHOOK on %d\n", chan->channo);
 				spin_lock_irqsave(&chan->lock, flags);
-				chan->pulsecount = 0;		// a hack to make sure we always start at 0. XXX SA
+				chan->pulsecount = 0;		// make sure we always start at 0. XXX SA
 				if ((chan->txstate == DAHDI_TXSTATE_KEWL) ||
 				  (chan->txstate == DAHDI_TXSTATE_AFTERKEWL)) {
 					spin_unlock_irqrestore(&chan->lock, flags);
@@ -6915,13 +6914,12 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 				} else {
 					if (chan->sig == DAHDI_SIG_RPO) { 		// SA added bracket to else aug 2
 						module_printk(KERN_WARNING, "We're setting the hookstate to TXSTATE_START\n");
-						/* RPO go off hook here */
-						/* sender will take control via __dahdi_hooksig_pvt()
+						// RPO go off hook here
+						// sender will take control via __dahdi_hooksig_pvt()
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_OFFHOOK, 0);
 						__qevent(chan, DAHDI_EVENT_HOOKCOMPLETE);
 
-						/* Set a timer for the sender */
-						chan->rpdebtimer=20000;
+						chan->rpdebtimer=20000;     // Set a timer for the sender
 						chan->pulsecount = 0;		// Super critical to always start at 0. XXX SA
 					} else {
 						dahdi_rbs_sethook(chan, DAHDI_TXSIG_START, DAHDI_TXSTATE_START, chan->starttime);
@@ -8509,7 +8507,7 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		   Current state: Pulse
 		   New state: Normal 
 		*/
-		module_printk(KERN_NOTICE, "STATE RP-BREAK (%x)\n", chan->txsig);
+		//module_printk(KERN_NOTICE, "STATE RP-BREAK (%x)\n", chan->txsig);
         dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_RPMAKE,
             chan->pulsemaketime);
 		chan->pulsecount++;
@@ -8524,7 +8522,7 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 		*/
 		if (chan->pulsecount >= 12) {
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_AFTERBONK, 500);
-			module_printk(KERN_NOTICE, "---------SENT REVERSAL, pulses %d\n", chan->pulsecount);
+			module_printk(KERN_NOTICE, "---------OVERFLOW, sending reversal after %d pulses\n", chan->pulsecount);
 			__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);	// XXX SA: do I need this?
 			chan->selidx = 0;
 			chan->pulsecount = 0;
@@ -8532,7 +8530,7 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 			break;
 		}
 
-		module_printk(KERN_NOTICE, "STATE RP-MAKE (%x)\n", chan->txsig);
+		//module_printk(KERN_NOTICE, "STATE RP-MAKE (%x)\n", chan->txsig);
 		dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE,
 			DAHDI_TXSTATE_RPBREAK, chan->pulsebreaktime);
         chan->otimer = chan->pulseaftertime * DAHDI_CHUNKSIZE;
@@ -8565,6 +8563,13 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);	// XXX SA: do i need this?
 				chan->seqswitch = 3;
 				chan->rpdebtimer = 250 * DAHDI_CHUNKSIZE; // 2 seconds?
+
+				/* If we got here before finishing selections, hangup. Nothing more to do */
+				if (chan->selidx < IA) {
+					module_printk(KERN_NOTICE, "Got to RPAFTER with selidx < IA\n");
+					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, 100);
+				}
+				wake_up_interruptible(&chan->waitq); // XXX SA do I need this?
 				break;
 			default:
 				break;
@@ -8582,7 +8587,8 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 	case DAHDI_TXSTATE_AFTERBONK:
 		module_printk(KERN_NOTICE, "AFTERBONK: Hanging up...\n");
 		module_printk(KERN_NOTICE, "========================\n");
-		dahdi_hangup(chan);
+		
+		__qevent(chan,DAHDI_EVENT_ONHOOK);	// will this send the hangup to Asterisk?
 		wake_up_interruptible(&chan->waitq);
 		break;
 
@@ -8766,6 +8772,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		}
 
 	   case DAHDI_SIG_RPO:
+			// If we're in a dialing state, pass the call to the sender()
 			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && ((chan->dialing == 1)
 					|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN))) {
 				sender(chan, rxsig);
@@ -8779,31 +8786,21 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 
 	   case DAHDI_SIG_RPT:
+			// If we notice a hook transition from a real sender while signaling,
+			// pass it along to commutator(). Otheriwse, if the caller hung up, handle it here.
+			// XXX SA TODO: implement clean hangup in the middle of dial, and fix seq sw 4
 
-			/* if we're signaling, just send us to commutator() */
-			// XXX SA this should all be a select case block instaed
-			// This should also specify which signal we recieved so we don't always land here.
 			if ((chan->selidx <= IA) && (chan->seqswitch == 0)) {
 				commutator(chan, rxsig);
-				module_printk(KERN_NOTICE, "Got hook transition, calling commutator");
-
-			/* Below is complicated, because we will get a momentary on-hook (OPEN) from the sub sender
-			   after selections are complete. (CD-25013-01 Section 12.2)
-			   We have to account for that, which we do by advancing our sequence switch one step forward before saing
-			   "OK, we're connected now." This has no effect except to ignore the "spurious" ON_HOOK state we get from the
-			   sub sender. In this case, we get here after rbs_otimer_expire() does it's thing.
-			   In other cases, we could legitimately get here if the calling sub hangs up.
-			 */
-			} else if (chan->seqswitch == 3 && rxsig == DAHDI_RXSIG_ONHOOK) {
-				module_printk(KERN_NOTICE, "Sub sender opened loop momentarily after pulsing. Advance to 4\n");
-				chan->seqswitch = 4;
-			} else if (chan->seqswitch >= 4 && rxsig == DAHDI_RXSIG_ONHOOK) {
-				module_printk(KERN_NOTICE, "Detected ONHOOK in seqswitch 4. Going to AFTERBONK");
+				//module_printk(KERN_NOTICE, "Got hook transition, calling commutator");
+			} else if (chan->seqswitch >= 3 && rxsig == DAHDI_RXSIG_ONHOOK) {
+				module_printk(KERN_NOTICE, "Detected ONHOOK in seqswitch 3. Sub hung up?");
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, 30);	// AFTERBONK handles the hangup for us, just send it there and go away
 				chan->seqswitch = 0;
 			}
 			break;
-	   default:
+
+		default:
 			break;
 	}
 }
@@ -8926,8 +8923,7 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 
 	switch(rxsig) {
 		case DAHDI_RXSIG_OFFHOOK:
-			module_printk(KERN_NOTICE, "GOT OFFHOOK, selidx: %i\n", chan->selidx);
-
+			module_printk(KERN_NOTICE, "GOT OFFHOOK, selidx: %i, seqswitch %i\n", chan->selidx, chan->seqswitch);
 			if ((chan->selidx == OB) || (chan->selidx == IB)) {
 				__qevent(chan, DAHDI_EVENT_RINGOFFHOOK);
 			}
@@ -8948,7 +8944,7 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			break;
 
 		case DAHDI_RXSIG_ONHOOK:
-			module_printk(KERN_NOTICE, "GOT ONHOOK, selidx: %i, pulses %d\n", chan->selidx, *pulsecount);
+			module_printk(KERN_NOTICE, "GOT ONHOOK, selidx: %i, seqswitch %i\n", chan->selidx, chan->seqswitch);
 
 			/* Clever trick. Set a timer for a while, then go on hook, waiting
 			   for next selection to start. If still ONHOOK after 10 sec, then go straight
