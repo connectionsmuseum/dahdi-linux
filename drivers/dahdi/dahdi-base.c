@@ -6931,6 +6931,12 @@ static int dahdi_chan_ioctl(struct file *file, unsigned int cmd, unsigned long d
 				break;
 			case DAHDI_WINK:
 				spin_lock_irqsave(&chan->lock, flags);
+				if (chan->sig == DAHDI_SIG_RPT) {
+					module_printk(KERN_WARNING, "Got an IA wink from Asteris, should call commutator now\n");
+					chan->seqswitch = 2;
+					commutator(chan, DAHDI_RXSIG_OFFHOOK);		// commutator will handle the incoming advance
+				}
+
 				if (chan->txstate != DAHDI_TXSTATE_ONHOOK) {
 					spin_unlock_irqrestore(&chan->lock, flags);
 					return -EBUSY;
@@ -8545,31 +8551,31 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 
 
 		switch(chan->seqswitch) {
-			case 0:
+			case 2:
 				/* CD 11.814 incoming advance reverse battery */
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RPAFTER, 150);
-				chan->seqswitch = 1;
+				chan->seqswitch = 3;
 				break;
-			case 1:
+			case 3:
 				/* CD 11.815 (RV3) breaks T+R, terminates reversal */
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPAFTER, 50);
-				chan->seqswitch = 2;
+				chan->seqswitch = 4;
 				break;
-			case 2:
+			case 4:
 				/* CD 12.2 (RV3), (RV4) released restore normal polarity 
 				   Normal polarity remains until called sub answers, which is 
 				   controlled by Asterisk. Our state machine is finished. */
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_RPAFTER, 100);
 				__qevent(chan, DAHDI_EVENT_DIALCOMPLETE);	// XXX SA: do i need this?
-				chan->seqswitch = 3;
+				chan->seqswitch = 5;
 				chan->rpdebtimer = 250 * DAHDI_CHUNKSIZE; // 2 seconds?
 
 				/* If we got here before finishing selections, hangup. Nothing more to do */
 				if (chan->selidx < IA) {
-					module_printk(KERN_NOTICE, "Got to RPAFTER with selidx < IA\n");
+					module_printk(KERN_NOTICE, "TELLTALE. Got to RPAFTER, selidx < IA\n");
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, 100);
 				}
-				wake_up_interruptible(&chan->waitq); // XXX SA do I need this?
+				wake_up_interruptible(&chan->waitq);
 				break;
 			default:
 				break;
@@ -8788,13 +8794,11 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	   case DAHDI_SIG_RPT:
 			// If we notice a hook transition from a real sender while signaling,
 			// pass it along to commutator(). Otheriwse, if the caller hung up, handle it here.
-			// XXX SA TODO: implement clean hangup in the middle of dial, and fix seq sw 4
-
-			if ((chan->selidx <= IA) && (chan->seqswitch == 0)) {
+			if ((chan->selidx <= IA) && (chan->seqswitch <= 1)) {
 				commutator(chan, rxsig);
 				//module_printk(KERN_NOTICE, "Got hook transition, calling commutator");
-			} else if (chan->seqswitch >= 3 && rxsig == DAHDI_RXSIG_ONHOOK) {
-				module_printk(KERN_NOTICE, "Detected ONHOOK in seqswitch 3. Sub hung up?");
+			} else if (chan->seqswitch >= 5 && rxsig == DAHDI_RXSIG_ONHOOK) {
+				module_printk(KERN_NOTICE, "Detected ONHOOK in seqswitch 5. Sub hung up?");
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, 30);	// AFTERBONK handles the hangup for us, just send it there and go away
 				chan->seqswitch = 0;
 			}
@@ -8916,23 +8920,28 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	int *pulsecount = &chan->pulsecount;
 	int *selections = chan->selections;
 	
+#if 0
 	// We are not doing office selections in RPT yet.
 	if (chan->selidx == OB) {
 		chan->selidx = IB;
 	}
-
+#endif
 	switch(rxsig) {
 		case DAHDI_RXSIG_OFFHOOK:
 			module_printk(KERN_NOTICE, "GOT OFFHOOK, selidx: %i, seqswitch %i\n", chan->selidx, chan->seqswitch);
-			if ((chan->selidx == OB) || (chan->selidx == IB)) {
+			if (chan->seqswitch == 0) {
 				__qevent(chan, DAHDI_EVENT_RINGOFFHOOK);
+				chan->seqswitch = 1;
 			}
 
-			if (chan->selidx >= IA) {
+			if (chan->seqswitch == 2) {	// XXX SA set by WINK ioctl
+
 				module_printk(KERN_NOTICE, "Finished FU selections. Sending reversal!");
-				module_printk(KERN_NOTICE, "Selections: %d,%d,%d,%d,%d",
-				selections[2], selections[3], selections[4], selections[5], selections[6]);
+				module_printk(KERN_NOTICE, "Selections: %d,%d,%d,%d,%d,%d,%d",
+				selections[0], selections[1], selections[2], selections[3],
+				selections[4], selections[5], selections[6]);
 				/* CD-25013-01 11.813, this pulse does not increment count */
+				chan->selidx = IA; // maybe we can get rid of selidx and just use the seqswitch
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_PULSE, DAHDI_TXSTATE_RPAFTER, 100);
 				break;
 			}
@@ -8954,10 +8963,9 @@ void commutator(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_AFTERBONK, chan->rpdebtimer);
 			
 			/* telltale is handled in otimer_expire(), so we can just.. */
-			selections[chan->selidx] = *pulsecount;
-
+			module_printk(KERN_NOTICE, "selidx %i stored pulsecount %i", chan->selidx, *pulsecount);
+			selections[chan->selidx++] = *pulsecount;
 			__qevent(chan, DAHDI_EVENT_PULSEDIGIT | ('0' + *pulsecount));
-			chan->selidx++;
 			*pulsecount = 0;
 			break;
 		default:
