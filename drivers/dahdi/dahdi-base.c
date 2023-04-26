@@ -166,7 +166,6 @@ enum dahdi_txstate {
 	DAHDI_TXSTATE_RPBREAK,
 	DAHDI_TXSTATE_RPMAKE,
 	DAHDI_TXSTATE_RPAFTER,
-	DAHDI_TXSTATE_RUNDOWN,
 	DAHDI_TXSTATE_DOWNDRIVE,
 };
 
@@ -2900,16 +2899,21 @@ static int dahdi_hangup(struct dahdi_chan *chan)
 			dahdi_rbs_sethook(chan, DAHDI_TXSIG_KEWL, DAHDI_TXSTATE_KEWL, DAHDI_KEWLTIME);
 		/* RPO channels must drive the selector to tell-tale before they can be released */
 		} else if (chan->sig == DAHDI_SIG_RPO) {
-				/* seqswitch used as a flag to say we've already begun selections */
+				
+				/*	Here, we have to do work to ensure that we gracefully "run down"
+					a selector that's been traveling upwards. We can't just leave it in
+					position (CD-25012-01 Section 14.08). If we're dialing (seqswitch 1),
+					we call the sender back and advance to 3. Sender detects this and sets
+					a pulse count which can never be satisfied, driving the selector up
+					to telltale. We then exit this function and come back later. */
 				if (chan->seqswitch == 1) {
 					/* run down the sender */
 					module_printk(KERN_NOTICE, "Hung up while making selections.\n");
-					dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_RUNDOWN, 5000);
+					chan->seqswitch = 3;		// used to indicate rundown to sender
+					sender(chan, DAHDI_RXSIG_ONHOOK); 
 					return 0;
-				} else if (chan->txstate == DAHDI_TXSTATE_DOWNDRIVE) {
-					module_printk(KERN_NOTICE, "Run down complete, going on hook.\n");
-					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
 				} else {
+					module_printk(KERN_NOTICE, "Run down complete, going on hook.\n");
 					dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
 				}
 		} else 
@@ -8593,15 +8597,11 @@ static inline void __rbs_otimer_expire(struct dahdi_chan *chan)
 
         break;
 
-	case DAHDI_TXSTATE_RUNDOWN:
-		dahdi_rbs_sethook(chan, DAHDI_TXSIG_ONHOOK, DAHDI_TXSTATE_ONHOOK, 0);
-		wake_up_interruptible(&chan->waitq);
-		break;
-
 	case DAHDI_TXSTATE_DOWNDRIVE:
 		module_printk(KERN_NOTICE, "TXSTATE_DOWNDRIVE: Hanging up...\n");
 		module_printk(KERN_NOTICE, "========================\n");
-		__qevent(chan,DAHDI_EVENT_ONHOOK);
+		__qevent(chan, DAHDI_EVENT_ONHOOK);
+		dahdi_hangup(chan);
 		wake_up_interruptible(&chan->waitq);
 		break;
 
@@ -8787,7 +8787,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 	   case DAHDI_SIG_RPO:
 			// If we're in a dialing state, pass the call to the sender()
 			if ((chan->txstate == DAHDI_TXSTATE_OFFHOOK) && ((chan->dialing == 1)
-					|| (chan->txstate == DAHDI_TXSTATE_RUNDOWN))) {
+						|| (chan->seqswitch == 3))) {
 				sender(chan, rxsig);
 
 				/* Hammer Asterisk with dialcomplete events to keep audio passing thru
@@ -8824,7 +8824,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
   * Converting the dialstring to an array of integers.
   * Counting and storing pulses, and debouncing transients.
   * Gracefully driving the distant selector to telltale if the
-  * subscriber hangs up in the middle of selections. (TXSTATE_RUNDOWN)
+  * subscriber hangs up in the middle of selections. (seqswitch == 3)
 
   * ref: CD-21193-02 Subscriber Sender Non-Coin (Panel)
   *      CD-25012-01 Subscriber Sender (No. 1 Crossbar)
@@ -8832,6 +8832,7 @@ static void __dahdi_hooksig_pvt(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
  **/
 void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 {
+	module_printk(KERN_NOTICE, "Entered sender()\n");
 	int i;
 
 	/* If first time we're called on this call, handle dialstring conversion. */
@@ -8855,7 +8856,9 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		chan->seqswitch = 1;
 	}
 
-	if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
+	/* If the caller hung up, drive the distant selector to telltale */
+	if (chan->seqswitch == 3) {
+		module_printk(KERN_NOTICE, "in seqswitch 3\n");
 		chan->selections[chan->selidx] = 101;
 	}
 
@@ -8864,7 +8867,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 		case DAHDI_RXSIG_PULSE:
 			/* For the first 10-20ms ignore any transient pulses. They're not real. */
 			if ((chan->rpdebtimer > 18700)) {
-				module_printk(KERN_NOTICE, " DEBOUNCED!\n\n");
+				module_printk(KERN_NOTICE, " DEBOUNCED!\n");
 				return;
 			} else {
 				chan->pulsecount++;
@@ -8883,6 +8886,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			}
 			break;
 		case DAHDI_RXSIG_ONHOOK:
+				module_printk(KERN_NOTICE, "Detected ONHOOK in sender()\n");
 			break;
 		case DAHDI_RXSIG_OFFHOOK:
 			module_printk(KERN_NOTICE, "REVERSAL\n");
@@ -8896,7 +8900,7 @@ void sender(struct dahdi_chan *chan, enum dahdi_rxsig rxsig)
 			chan->dialing = 0;
 			/* If we're in a rundown state then we need to send one more trunk closure
 			   then let rbs_sethook take care of the rest for us */
-			if (chan->txstate == DAHDI_TXSTATE_RUNDOWN) {
+			if (chan->seqswitch == 3) {
 				module_printk(KERN_NOTICE, "1. Sender completed rundown\n");
 				dahdi_rbs_sethook(chan, DAHDI_TXSIG_OFFHOOK, DAHDI_TXSTATE_DOWNDRIVE, 500);
 				chan->seqswitch = 0;
