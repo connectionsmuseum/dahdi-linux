@@ -583,7 +583,7 @@ struct dahdi_chan {
 
 	/* Revertive Pulse selections stuff */
 	int selections[7];
-	enum selection{OB, OG, IB, IG, FB, FT, FU, IA} selidx;
+	enum selection{RP_OB, RP_OG, RP_IB, RP_IG, RP_FB, RP_FT, RP_FU, RP_IA} selidx;
 	int seqswitch;
 	int rpdebtimer;
 
@@ -673,15 +673,27 @@ struct dahdi_hdlc {
 #define DAHDI_MAX_PRETRAINING   1000	/*!< 1000ms max pretraining time */
 
 /* Revertive Pulse definitions */
-#define DAHDI_DEFAULT_RPMAKETIME 22			/* Tip has battery. */
-#define DAHDI_DEFAULT_RPBREAKTIME 22		/* Tip is grounded. */
-#define DAHDI_DEFAULT_RPAFTERTIME 250		/* This might not be needed. */
-#define DAHDI_DEFAULT_BONKTIME 200			/* Tell-Tale, Overflow, Incoming Advance */
+#define DAHDI_RP_MAKETIME 40		/* Tip has battery. */
+#define DAHDI_RP_BREAKTIME 40		/* Tip is grounded. */
+#define DAHDI_BONKTIME 200			/* Tell-Tale, Overflow, Incoming Advance */
 
-#define DAHDI_RPMINTIME (20 * 8)	/* A selector should ground T for at least 20 ms */
-#define DAHDI_RPMAXTIME (100 * 8)	/* A selector shouldn't ground T for more than 100 ms */
+#define DAHDI_RP_MINTIME (20 * 8)	/* A selector should ground T for at least 20 ms */
+#define DAHDI_RP_MAXTIME (100 * 8)	/* A selector shouldn't ground T for more than 100 ms */
 
 #define DAHDI_RPTIMEOUT ((DAHDI_RPMAXTIME / 8) + 50)
+
+#define SDR_SEQ_0_NORMAL 0
+#define SDR_SEQ_1_DIALING 1
+#define SDR_SEQ_2_RUNDOWN 2
+
+#define SEL_SEQ_0_NORMAL 0
+#define SEL_SEQ_1_UPDRIVE 1
+#define SEL_SEQ_2_REVERSAL 2
+#define SEL_SEQ_3_BREAK_TR 3
+#define SEL_SEQ_4_DISCHARGE 4
+#define SEL_SEQ_5_TALKING 5
+#define SEL_SEQ_6_DOWNDRIVE 6
+/* end RP definitions */
 
 #ifdef	FXSFLASH
 #define DAHDI_FXSFLASHMINTIME	450	/*!< min 450ms */
@@ -703,7 +715,7 @@ enum dahdi_txsig {
 	DAHDI_TXSIG_OFFHOOK, /*!< Off hook */
 	DAHDI_TXSIG_START,   /*!< Start / Ring */
 	DAHDI_TXSIG_KEWL,    /*!< Drop battery if possible */
-	DAHDI_TXSIG_PULSE,
+	DAHDI_TXSIG_PULSE,   /*!< Ground on Tip & Ring */
 	DAHDI_TXSIG_REVERSAL,
 	/*! Leave this as the last entry */
 	DAHDI_TXSIG_TOTAL,
@@ -715,7 +727,7 @@ enum dahdi_rxsig {
 	DAHDI_RXSIG_START,
 	DAHDI_RXSIG_RING,
 	DAHDI_RXSIG_INITIAL,
-	DAHDI_RXSIG_PULSE		/* revertive pulse happening now */
+	DAHDI_RXSIG_PULSE		/*!< revertive pulse coming from real selector */
 };
 	
 enum {
